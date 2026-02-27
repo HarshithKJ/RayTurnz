@@ -1,0 +1,2 @@
+# RayTurnz
+AI Stock Analyzer
