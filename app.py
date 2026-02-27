@@ -32,14 +32,15 @@ st.markdown("""
     
     /* Make the title pop AND center it */
     .bolt-title {
-        background: -webkit-linear-gradient(45deg, #fe4a90, #2ab7ca);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-weight: 800;
-        font-size: 3.5em; 
-        margin-bottom: 0px;
-        text-align: center; 
-    }
+    background: -webkit-linear-gradient(45deg, #fe4a90, #2ab7ca);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 800;
+    font-size: 56px !important; /* Force a large, fixed size */
+    line-height: 1.2;
+    margin-bottom: 5px;
+    text-align: center; 
+}
     
     /* Center the subtitle too */
     .bolt-subtitle {
