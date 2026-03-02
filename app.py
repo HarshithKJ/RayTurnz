@@ -4,12 +4,8 @@ import plotly.express as px
 import data_engine 
 import time
 
-# 🔐 PRODUCTION-GRADE SECURITY
-# This pulls the key from .streamlit/secrets.toml securely
-if "GEMINI_API_KEY" in st.secrets:
-    data_engine.configure_ai(api_key=st.secrets["GEMINI_API_KEY"])
-else:
-    st.error("🚨 Configuration Error: GEMINI_API_KEY not found in secrets.")
+# 🚨 INITIALIZE AI KEY
+data_engine.configure_ai(api_key="AIzaSyAPvuVXjQw2BxdFsTflF7lGI9x5BZ2MG1")
 
 st.set_page_config(page_title="RayTurnz AI Stock Analyzer", layout="wide", page_icon="⚡")
 
@@ -32,15 +28,14 @@ st.markdown("""
     
     /* Make the title pop AND center it */
     .bolt-title {
-    background: -webkit-linear-gradient(45deg, #fe4a90, #2ab7ca);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    font-weight: 800;
-    font-size: 56px !important; /* Force a large, fixed size */
-    line-height: 1.2;
-    margin-bottom: 5px;
-    text-align: center; 
-}
+        background: -webkit-linear-gradient(45deg, #fe4a90, #2ab7ca);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-weight: 800;
+        font-size: 3.5em; 
+        margin-bottom: 0px;
+        text-align: center; 
+    }
     
     /* Center the subtitle too */
     .bolt-subtitle {
@@ -102,7 +97,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Generate the Centered HTML text
-st.markdown('<p class="bolt-title">⚡ RayTurnz AI Stock Analyzer</p>', unsafe_allow_html=True)
+st.markdown('<p class="bolt-title">⚡ Ray AI Stock Analyzer</p>', unsafe_allow_html=True)
 st.markdown('<p class="bolt-subtitle">Your Smart AI Stock Decision Maker</p>', unsafe_allow_html=True)
 st.divider()
 

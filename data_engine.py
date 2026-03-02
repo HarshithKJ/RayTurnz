@@ -7,6 +7,12 @@ import google.generativeai as genai
 from fpdf import FPDF
 from scipy import stats
 
+# Create a session that mimics a real Chrome browser
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+})
+
 # ==========================================
 # 1. SETUP & FORMATTING
 # ==========================================
@@ -281,42 +287,21 @@ import datetime
 import urllib.request
 import xml.etree.ElementTree as ET
 
-def get_stock_news(ticker_input):
-    """Fetches news via yfinance, with a bulletproof direct RSS fallback if the API fails."""
-    formatted_news = []
-    
-    # --- ATTEMPT 1: Standard yfinance ---
+@st.cache_data(ttl=900)
+def get_stock_data(ticker):
     try:
-        stock = yf.Ticker(ticker_input)
-        news_data = stock.news
+        # 1. We inject the session here
+        stock = yf.Ticker(ticker, session=session) 
         
-        if news_data:
-            for article in news_data:
-                title = article.get('title', '')
-                link = article.get('link', '')
-                
-                if not title or not link:
-                    continue # Skip broken articles
-                    
-                publisher = article.get('publisher', 'Yahoo Finance')
-                pub_time_unix = article.get('providerPublishTime', 0)
-                
-                if pub_time_unix > 0:
-                    pub_time = datetime.datetime.fromtimestamp(pub_time_unix)
-                else:
-                    pub_time = datetime.datetime.now()
-                    
-                formatted_news.append({
-                    "title": title,
-                    "publisher": publisher,
-                    "link": link,
-                    "time_obj": pub_time,
-                    "time_str": pub_time.strftime("%b %d, %Y - %I:%M %p"),
-                    "timestamp": pub_time.timestamp()
-                })
-    except Exception:
-        pass # If yfinance fails, quietly move to the fallback
-
+        # 2. Let the code fetch the info
+        info = stock.info 
+        
+        # NOTE: Leave the rest of the code inside your function EXACTLY as you wrote it.
+        # Just make sure everything is indented to line up with the 'try:' block.
+        
+        return stock, info # (Keep whatever your original return line was)
+        
+        
     # --- ATTEMPT 2: The Bulletproof RSS Fallback ---
     # If yfinance returned empty or broken data, scrape the XML feed directly!
     if not formatted_news:
@@ -358,6 +343,11 @@ def get_stock_news(ticker_input):
     # Finally, sort from Newest to Oldest
     formatted_news = sorted(formatted_news, key=lambda x: x['timestamp'], reverse=True)
     return formatted_news
+
+ except Exception as e:
+        # 3. If Yahoo blocks us, we catch the crash here instead of breaking the app
+        st.error(f"Yahoo Rate Limit Hit! Error: {e}")
+        return None
 
 # ==========================================
 # 8. AI NEWS SENTIMENT ANALYSIS
