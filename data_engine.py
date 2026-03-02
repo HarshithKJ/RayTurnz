@@ -3,9 +3,11 @@ import pandas as pd
 import ta
 import joblib
 import os
+import requests
 import google.generativeai as genai
 from fpdf import FPDF
 from scipy import stats
+import streamlit as st
 
 # Create a session that mimics a real Chrome browser
 session = requests.Session()
@@ -280,7 +282,6 @@ def get_institutional_holdings(ticker_input):
         return mf_df, inst_df
     except Exception as e:
         return None, None
-# ==========================================
 # 7. LIVE NEWS FEED (WITH RSS FALLBACK)
 # ==========================================
 import datetime
@@ -288,22 +289,25 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 @st.cache_data(ttl=900)
-def get_stock_data(ticker):
+def get_stock_news(ticker_input):
+    formatted_news = []
+    
+    # --- ATTEMPT 1: Try yfinance with our anti-bot session ---
     try:
-        # 1. We inject the session here
-        stock = yf.Ticker(ticker, session=session) 
-        
-        # 2. Let the code fetch the info
-        info = stock.info 
-        
-        # NOTE: Leave the rest of the code inside your function EXACTLY as you wrote it.
-        # Just make sure everything is indented to line up with the 'try:' block.
-        
-        return stock, info # (Keep whatever your original return line was)
-        
-        
+        stock = yf.Ticker(ticker_input, session=session)
+        raw_news = stock.news
+        if raw_news:
+            for item in raw_news:
+                formatted_news.append({
+                    "title": item.get("title", "No Title"),
+                    "publisher": item.get("publisher", "Yahoo Finance"),
+                    "link": item.get("link", "#"),
+                    "timestamp": item.get("providerPublishTime", datetime.datetime.now().timestamp())
+                })
+    except Exception as e:
+        pass # If Yahoo blocks the main feed, we stay quiet and fall back to RSS
+
     # --- ATTEMPT 2: The Bulletproof RSS Fallback ---
-    # If yfinance returned empty or broken data, scrape the XML feed directly!
     if not formatted_news:
         try:
             # Build the direct Yahoo RSS URL
@@ -324,7 +328,6 @@ def get_stock_data(ticker):
                 pubDate = item.find('pubDate').text if item.find('pubDate') is not None else ''
                 
                 try:
-                    # Convert RSS string date to Python datetime
                     pub_time = datetime.datetime.strptime(pubDate, "%a, %d %b %Y %H:%M:%S %z")
                 except:
                     pub_time = datetime.datetime.now()
@@ -338,17 +341,11 @@ def get_stock_data(ticker):
                     "timestamp": pub_time.timestamp()
                 })
         except Exception as e:
-            return [] # If both methods fail, return empty list safely
+            return [] # If both methods fail, return an empty list safely so the app doesn't crash
 
     # Finally, sort from Newest to Oldest
-    formatted_news = sorted(formatted_news, key=lambda x: x['timestamp'], reverse=True)
+    formatted_news = sorted(formatted_news, key=lambda x: x.get('timestamp', 0), reverse=True)
     return formatted_news
-
- except Exception as e:
-        # 3. If Yahoo blocks us, we catch the crash here instead of breaking the app
-        st.error(f"Yahoo Rate Limit Hit! Error: {e}")
-        return None
-
 # ==========================================
 # 8. AI NEWS SENTIMENT ANALYSIS
 # ==========================================
