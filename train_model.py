@@ -17,8 +17,13 @@ def apply_technicals_and_targets(df):
     bb = ta.volatility.BollingerBands(close=df['Close'], window=20, window_dev=2)
     df['BB_High_Ind'] = bb.bollinger_hband_indicator()
     df['BB_Low_Ind'] = bb.bollinger_lband_indicator()
-    df['SMA_20'] = ta.trend.sma_indicator(close=df['Close'], window=20)
-    df['SMA_50'] = ta.trend.sma_indicator(close=df['Close'], window=50)
+    
+    # 👇 SAFELY CONVERTED TO PERCENTAGE DISTANCE 👇
+    sma_20 = ta.trend.sma_indicator(close=df['Close'], window=20)
+    df['SMA_20_Pct'] = (df['Close'] - sma_20) / sma_20
+    
+    sma_50 = ta.trend.sma_indicator(close=df['Close'], window=50)
+    df['SMA_50_Pct'] = (df['Close'] - sma_50) / sma_50
     
     # 🎯 TARGET 1: Next Day
     df['Next_Day_Return'] = df['Close'].shift(-1).pct_change()
@@ -30,6 +35,11 @@ def apply_technicals_and_targets(df):
     
     df.dropna(inplace=True)
     return df
+
+# ... (keep your training loop exactly the same) ...
+
+# 👇 UPDATE THE FEATURES LIST TO MATCH 👇
+features = ['Daily_Return', 'RSI', 'MACD', 'BB_High_Ind', 'BB_Low_Ind', 'SMA_20_Pct', 'SMA_50_Pct']
 
 # ==========================================
 # PHASE 1: TRAINING (Pre-2022 Data Only)
@@ -47,7 +57,7 @@ for ticker in tickers:
         train_data.append(df)
 
 final_train_df = pd.concat(train_data)
-features = ['Daily_Return', 'RSI', 'MACD', 'BB_High_Ind', 'BB_Low_Ind', 'SMA_20', 'SMA_50']
+features = ['Daily_Return', 'RSI', 'MACD', 'BB_High_Ind', 'BB_Low_Ind', 'SMA_20_Pct', 'SMA_50_Pct']
 X_train = final_train_df[features]
 
 y_train_daily = final_train_df['Target_Daily']

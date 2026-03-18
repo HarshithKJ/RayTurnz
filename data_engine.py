@@ -8,6 +8,7 @@ import google.generativeai as genai
 from fpdf import FPDF
 from scipy import stats
 import streamlit as st
+import requests
 
 # Create a session that mimics a real Chrome browser
 session = requests.Session()
@@ -193,8 +194,13 @@ def calculate_technicals(hist):
     bb = ta.volatility.BollingerBands(close=hist['Close'], window=20, window_dev=2)
     hist['BB_High_Ind'] = bb.bollinger_hband_indicator()
     hist['BB_Low_Ind'] = bb.bollinger_lband_indicator()
-    hist['SMA_20'] = ta.trend.sma_indicator(close=hist['Close'], window=20)
-    hist['SMA_50'] = ta.trend.sma_indicator(close=hist['Close'], window=50)
+    
+    # 👇 MATCH THE TRAINING DATA EXACTLY 👇
+    sma_20 = ta.trend.sma_indicator(close=hist['Close'], window=20)
+    hist['SMA_20_Pct'] = (hist['Close'] - sma_20) / sma_20
+    
+    sma_50 = ta.trend.sma_indicator(close=hist['Close'], window=50)
+    hist['SMA_50_Pct'] = (hist['Close'] - sma_50) / sma_50
     return hist
 
 def run_quant_models(latest_data):
@@ -204,11 +210,14 @@ def run_quant_models(latest_data):
         model_daily = joblib.load("bolt_quant_model_daily.pkl")
         model_weekly = joblib.load("bolt_quant_model_weekly.pkl")
         
+        # 👇 FEED THE NEW FEATURES TO THE LIVE MODEL 👇
         X_live = [[
             latest_data['Daily_Return'], latest_data['RSI'], latest_data['MACD'], 
             latest_data['BB_High_Ind'], latest_data['BB_Low_Ind'], 
-            latest_data['SMA_20'], latest_data['SMA_50']
+            latest_data['SMA_20_Pct'], latest_data['SMA_50_Pct']
         ]]
+        
+        # ... (keep your predict logic exactly the same) ...
         
         # Daily Predict
         p_day = model_daily.predict(X_live)[0]
@@ -232,8 +241,10 @@ def run_quant_models(latest_data):
 import google.generativeai as genai
 
 def generate_genai_verdict(info, trend, zone, rsi, macd, red_flags_text, str_day, str_week):
-    """Feeds technicals, ML predictions, and fundamental red flags into Gemini."""
     try:
+        # DO NOT re-configure the API key here
+        model = genai.GenerativeModel("gemini-1.5-flash") # Use 1.5-flash
+        # ... rest of your code
         model = genai.GenerativeModel("models/gemini-2.5-flash") # Or your chosen Gemini model
         
         ticker = info.get('symbol', 'the stock')
@@ -711,3 +722,471 @@ def calculate_beta_regression(ticker_input, market):
         }
     except Exception as e:
         return None
+
+# ==========================================
+# 12. MULTI-SOURCE NEWS & CONSENSUS AI
+# ==========================================
+
+def get_gnews_feed(ticker_input):
+    """Source: GNews API"""
+    try:
+        api_key = st.secrets.get("GNEWS_API_KEY")
+        if not api_key: return []
+        query = ticker_input.split('.')[0]
+        url = f"https://gnews.io/api/v4/search?q={query}&token={api_key}&lang=en&max=5"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            articles = response.json().get('articles', [])
+            return [{"title": a['title'], "source": a['source']['name'], "link": a['url'], "date": a['publishedAt'][:10]} for a in articles]
+    except Exception: return []
+    return []
+
+def get_newsdata_feed(ticker_input):
+    """Source: NewsData.io (Broad Search to guarantee results)"""
+    try:
+        api_key = st.secrets.get("NEWSDATA_API_KEY")
+        if not api_key: 
+            return []
+            
+        # Clean the ticker (e.g., AAPL.NS -> AAPL)
+        query = ticker_input.split('.')[0]
+        
+        # Use the standard /news endpoint, which is fully supported on the Free tier
+        url = "https://newsdata.io/api/1/news"
+        
+        # Using a params dictionary safely encodes the URL to prevent 0-result glitches
+        params = {
+            "apikey": api_key,
+            "q": query,       # Broad keyword search
+            "language": "en"
+        }
+        
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, params=params, headers=headers, timeout=5)
+        
+        if response.status_code == 200:
+            results = response.json().get('results', [])
+            return [{"title": r.get('title', 'No Title'), "source": r.get('source_id', 'NewsData').upper(), "link": r.get('link', '#'), "date": r.get('pubDate', '')[:10]} for r in results[:5]]
+        else:
+            # Prints to the app if you run out of credits or get blocked
+            st.error(f"NewsData Error: {response.text}")
+            return []
+            
+    except Exception as e: 
+        return []
+
+def get_stockdata_feed(ticker_input):
+    """Source: StockData.org"""
+    try:
+        api_key = st.secrets.get("STOCKDATA_API_KEY")
+        if not api_key: 
+            return []
+            
+        # Strip the .NS or .BO suffix so the API understands it
+        query = ticker_input.split('.')[0] 
+        url = f"https://api.stockdata.org/v1/news/all?symbols={query}&filter_entities=true&language=en&api_token={api_key}"
+        
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            articles = response.json().get('data', [])
+            return [{"title": a.get('title', 'No Title'), "source": a.get('source', 'StockData').upper(), "link": a.get('url', '#'), "date": a.get('published_at', '')[:10]} for a in articles[:5]]
+            
+        return [] # Fallback if the API returns a non-200 status code
+        
+    except Exception as e:
+        st.error(f"StockData Error: {e}") 
+        return []
+
+import google.generativeai as genai
+import streamlit as st
+
+def get_ai_model():
+    """Helper to ensure we always use the working connection."""
+    # This matches exactly how your working Hybrid Verdict works
+    return genai.GenerativeModel("gemini-1.5-flash")
+
+# ==========================================
+# NEW AI SENTIMENT FUNCTIONS (FIXED)
+# ==========================================
+
+def analyze_specific_news_sentiment(news_list, ticker, source_name):
+    """Analyzes a single news source using the working 2.5-flash model."""
+    if not news_list:
+        return f"No news available from {source_name}."
+    
+    headlines = "\n".join([f"- {article['title']}" for article in news_list[:5]])
+    
+    # 👇 Match the exact working model string 👇
+    model = genai.GenerativeModel("models/gemini-2.5-flash") 
+    
+    prompt = f"Analyze these {source_name} headlines for {ticker}. Provide: 1. Sentiment (Bullish/Bearish/Neutral) 2. A 2-sentence summary."
+    
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"AI Error: {str(e)}"
+
+
+def analyze_consensus_sentiment(all_news_payload, ticker):
+    """Master Consensus AI using the working 2.5-flash model."""
+    context = ""
+    for src, arts in all_news_payload.items():
+        context += f"\n--- {src} ---\n"
+        if not arts:
+            context += "No data.\n"
+        else:
+            for a in arts[:3]:
+                context += f"- {a['title']}\n"
+    
+    # 👇 Match the exact working model string 👇
+    model = genai.GenerativeModel("models/gemini-2.5-flash")
+    
+    prompt = f"""
+    Review these news sources for {ticker}:
+    {context}
+    
+    Provide a 'Consensus Report':
+    1. Information Asymmetry: Did regional sources catch news global sources missed?
+    2. Master Narrative: Summarize the combined truth.
+    3. Consensus Sentiment: [Bullish / Bearish / Neutral]
+    """
+    
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"AI Error: {str(e)}"
+# ==========================================
+# 🏦 MUTUAL FUND ENGINE (MFAPI.in)
+# ==========================================
+import requests
+import numpy as np
+from datetime import timedelta
+import pandas as pd
+import yfinance as yf
+import streamlit as st
+
+@st.cache_data(ttl=86400)
+def get_mf_list():
+    """Fetches the master list of all Indian Mutual Funds"""
+    try:
+        url = "https://api.mfapi.in/mf"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except Exception as e:
+        return []
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_premium_mf_data(fund_name):
+    """
+    ENTERPRISE WATERFALL PIPELINE
+    Tier 1: Groww Institutional API (Primary)
+    Tier 2: Direct Google Web Scrape via BeautifulSoup (Fallback)
+    """
+    import requests
+    import re
+    import urllib.parse
+    from bs4 import BeautifulSoup
+    
+    premium_data = {
+        "AUM": "Data Unavailable",
+        "Expense Ratio": "Data Unavailable",
+        "Exit Load": "Data Unavailable",
+        "Min. Investment": "Data Unavailable"
+    }
+    
+    # --- SENIOR DEV TRICK: AGGRESSIVE NAME CLEANING ---
+    # We slice the name to ONLY the first 4 words. 
+    # "JM Large Cap Fund (Regular)" -> "JM Large Cap Fund"
+    words = re.sub(r'\(.*?\)', '', fund_name).replace('-', ' ').split()
+    short_name = " ".join(words[:4])
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    }
+
+    # ==========================================
+    # TIER 1: THE GROWW API
+    # ==========================================
+    try:
+        safe_query = urllib.parse.quote(short_name)
+        search_url = f"https://groww.in/v1/api/search/v1/derived/scheme?available_for_investment=true&query={safe_query}&size=1"
+        search_res = requests.get(search_url, headers=headers, timeout=5).json()
+        
+        if search_res.get('content'):
+            search_id = search_res['content'][0].get('search_id')
+            detail_url = f"https://groww.in/v1/api/data/mf/web/v3/scheme/search/{search_id}"
+            detail_res = requests.get(detail_url, headers=headers, timeout=5).json()
+            
+            aum = detail_res.get('aum')
+            er = detail_res.get('expense_ratio')
+            el = detail_res.get('exit_load')
+            sip = detail_res.get('min_sip_investment')
+            
+            # If we successfully got the data, return it instantly!
+            if aum and er:
+                premium_data["AUM"] = f"₹ {aum:,.2f} Cr"
+                premium_data["Expense Ratio"] = f"{er}%"
+                premium_data["Exit Load"] = str(el) if el else "Nil"
+                premium_data["Min. Investment"] = f"₹ {sip} (SIP)" if sip else "₹ 500"
+                return premium_data
+    except Exception:
+        pass # If Groww fails, we silently slide down to Tier 2
+
+    # ==========================================
+    # TIER 2: DIRECT GOOGLE SCRAPE
+    # ==========================================
+    try:
+        google_query = urllib.parse.quote(f"{short_name} mutual fund AUM Expense Ratio moneycontrol")
+        google_url = f"https://www.google.com/search?q={google_query}"
+        
+        # We disguise ourselves specifically to bypass Google's bot detection
+        google_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        
+        resp = requests.get(google_url, headers=google_headers, timeout=5)
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        web_text = soup.get_text().lower()
+        
+        # Extract AUM using Regex
+        aum_match = re.search(r'(?:aum|size|assets).*?(?:rs\.?|₹|inr|rupees)?\s*([\d,.]+)\s*(?:cr|crore|cror)', web_text)
+        if aum_match and premium_data["AUM"] == "Data Unavailable":
+            premium_data["AUM"] = f"₹ {aum_match.group(1)} Cr"
+            
+        # Extract Expense Ratio using Regex
+        er_match = re.search(r'expense ratio.*?([\d.]+)\s*%', web_text)
+        if er_match and premium_data["Expense Ratio"] == "Data Unavailable":
+            premium_data["Expense Ratio"] = f"{er_match.group(1)}%"
+            
+        return premium_data
+        
+    except Exception as e:
+        # If both fail, we return the honest "Data Unavailable" to maintain integrity.
+        return premium_data
+
+def get_mf_and_benchmark(scheme_code, benchmark_ticker="^NSEI"):
+    """Fetches historical NAV and perfect-matches it with the NIFTY 50"""
+    try:
+        # 1. Fetch entire history from free API
+        url = f"https://api.mfapi.in/mf/{scheme_code}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return None, None, "API Connection Failed"
+            
+        data = response.json()
+        
+        # 2. Convert to DataFrame
+        df_mf = pd.DataFrame(data['data'])
+        df_mf['date'] = pd.to_datetime(df_mf['date'], format='%d-%m-%Y')
+        df_mf['nav'] = pd.to_numeric(df_mf['nav'], errors='coerce')
+        df_mf.set_index('date', inplace=True)
+        df_mf.sort_index(ascending=True, inplace=True)
+        
+        # 3. Get Benchmark Data (NIFTY 50)
+        inception_date = df_mf.index.min()
+        latest_date = df_mf.index.max()
+        df_bench = yf.Ticker(benchmark_ticker).history(start=inception_date, end=latest_date + timedelta(days=1))
+        
+        if df_bench.index.tz is not None:
+            df_bench.index = df_bench.index.tz_localize(None)
+            
+        # 4. Merge perfectly
+        merged_df = pd.merge(df_mf[['nav']], df_bench[['Close']], left_index=True, right_index=True, how='inner')
+        merged_df.columns = ['MF_NAV', 'Benchmark_Close']
+        merged_df = merged_df.dropna()
+        
+        # 5. Fetch premium info & package meta data
+        premium_info = get_premium_mf_data(data['meta'].get('scheme_name', ''))
+
+        meta_dict = {
+            "Fund Name": data['meta'].get('scheme_name', 'Unknown'),
+            "Fund House (AMC)": data['meta'].get('fund_house', 'Unknown'),
+            "Category": data['meta'].get('scheme_category', 'Unknown'),
+            "Benchmark Index": "NIFTY 50 (^NSEI)",
+            "Launch Date": inception_date.strftime('%d %b %Y'),
+            "AUM": premium_info["AUM"],
+            "Expense Ratio": premium_info["Expense Ratio"],
+            "Exit Load": premium_info["Exit Load"],
+            "Min. Investment": premium_info["Min. Investment"]
+        }
+        
+        return merged_df, meta_dict, "Success"
+    except Exception as e:
+        return None, None, f"Error: {str(e)}"
+
+def calculate_mf_metrics(merged_df, risk_free_rate=0.07):
+    """Calculates Advanced Institutional Quantitative Metrics for Mutual Funds"""
+    returns = merged_df.pct_change().dropna()
+    fund_returns = returns['MF_NAV']
+    bench_returns = returns['Benchmark_Close']
+    
+    years = len(merged_df) / 252 
+    
+    # 1. CAGR
+    if years > 0:
+        fund_cagr = (merged_df['MF_NAV'].iloc[-1] / merged_df['MF_NAV'].iloc[0]) ** (1/years) - 1
+        bench_cagr = (merged_df['Benchmark_Close'].iloc[-1] / merged_df['Benchmark_Close'].iloc[0]) ** (1/years) - 1
+    else:
+        fund_cagr, bench_cagr = 0, 0
+        
+    # 2. Risk Metrics (Volatility, Beta, Alpha, Sharpe)
+    fund_volatility = fund_returns.std() * np.sqrt(252)
+    bench_volatility = bench_returns.std() * np.sqrt(252)
+    
+    cov_matrix = np.cov(fund_returns, bench_returns)
+    beta = cov_matrix[0, 1] / cov_matrix[1, 1] if cov_matrix[1, 1] != 0 else 1
+    alpha = fund_cagr - (risk_free_rate + beta * (bench_cagr - risk_free_rate))
+    sharpe = (fund_cagr - risk_free_rate) / fund_volatility if fund_volatility != 0 else 0
+    
+    # 3. ADVANCED: Sortino Ratio (Downside Risk Only)
+    downside_returns = fund_returns[fund_returns < 0]
+    downside_std = downside_returns.std() * np.sqrt(252)
+    sortino = (fund_cagr - risk_free_rate) / downside_std if downside_std != 0 else 0
+    
+    # 4. ADVANCED: Maximum Drawdown (Worst crash from peak)
+    cum_returns = (1 + fund_returns).cumprod()
+    rolling_max = cum_returns.cummax()
+    drawdown = (cum_returns - rolling_max) / rolling_max
+    max_drawdown = drawdown.min()
+    
+    bench_cum = (1 + bench_returns).cumprod()
+    bench_rolling_max = bench_cum.cummax()
+    bench_drawdown = (bench_cum - bench_rolling_max) / bench_rolling_max
+    bench_max_drawdown = bench_drawdown.min()
+    
+    # 5. ADVANCED: Capture Ratios (How it performs in Bull vs Bear markets)
+    up_days = bench_returns > 0
+    down_days = bench_returns < 0
+    
+    fund_up_return = fund_returns[up_days].mean()
+    bench_up_return = bench_returns[up_days].mean()
+    up_capture = (fund_up_return / bench_up_return * 100) if bench_up_return != 0 else 100
+    
+    fund_down_return = fund_returns[down_days].mean()
+    bench_down_return = bench_returns[down_days].mean()
+    down_capture = (fund_down_return / bench_down_return * 100) if bench_down_return != 0 else 100
+
+    # 6. Trailing Returns (Historical lookup)
+    def get_trailing(days):
+        if len(merged_df) > days:
+            return (merged_df['MF_NAV'].iloc[-1] / merged_df['MF_NAV'].iloc[-days]) - 1
+        return None
+        
+    trailing = {
+        "1M": get_trailing(21),
+        "6M": get_trailing(126),
+        "1Y": get_trailing(252),
+        "3Y": get_trailing(756),
+        "5Y": get_trailing(1260)
+    }
+
+    # 7. THE SECRET SAUCE: RayTurnz Proprietary Score (Out of 10)
+    score = 5.0 # Everyone starts at average
+    
+    # Alpha (+ up to 2.5 points)
+    if alpha > 0.05: score += 2.5
+    elif alpha > 0.02: score += 1.0
+    elif alpha < -0.02: score -= 1.0
+    
+    # Sharpe/Sortino (+ up to 2 points)
+    if sharpe > 1.2: score += 2.0
+    elif sharpe > 0.8: score += 1.0
+    elif sharpe < 0.5: score -= 1.0
+    
+    # Max Drawdown vs Benchmark (+ up to 1.5 points)
+    dd_diff = max_drawdown - bench_max_drawdown # Positive means fund dropped LESS than market
+    if dd_diff > 0.05: score += 1.5
+    elif dd_diff > 0: score += 0.5
+    elif dd_diff < -0.05: score -= 1.0
+    
+    # Capture Ratios (+ up to 2 points)
+    if up_capture > 100 and down_capture < 100: score += 2.0
+    elif up_capture > down_capture: score += 1.0
+    elif down_capture > 110: score -= 1.0
+    
+    final_score = max(1.0, min(10.0, score)) # Cap between 1 and 10
+    
+    return {
+        "CAGR": fund_cagr,
+        "Benchmark CAGR": bench_cagr,
+        "Beta": beta,
+        "Alpha": alpha,
+        "Sharpe Ratio": sharpe,
+        "Sortino Ratio": sortino,
+        "Volatility (Std Dev)": fund_volatility,
+        "Max Drawdown": max_drawdown,
+        "Up Capture": up_capture,
+        "Down Capture": down_capture,
+        "Trailing Returns": trailing,
+        "Years of Data": years,
+        "RayTurnz Score": final_score
+    }
+
+# ==========================================
+# 13. MUTUAL FUND AI VERDICT
+# ==========================================
+import google.generativeai as genai
+
+def generate_mf_verdict(all_metrics, all_meta):
+    """
+    Dynamic AI Wealth Manager:
+    - If 1 fund: Reviews, suggests buy/hold, and lists better alternatives.
+    - If 2-5 funds: Compares and picks the absolute winner.
+    """
+    if not all_metrics:
+        return "No data available to analyze."
+
+    try:
+        # 1. Build the Data Context for the AI
+        context = "Here is the quantitative data for the selected mutual fund(s):\n\n"
+        for name, metrics in all_metrics.items():
+            # Grab the category so Gemini knows what alternatives to suggest
+            category = all_meta[name].get("Category", "Unknown Category")
+            
+            context += f"**{name}** (Category: {category})\n"
+            context += f"- CAGR (Return): {metrics['CAGR']*100:.2f}%\n"
+            context += f"- NIFTY 50 Benchmark CAGR: {metrics['Benchmark CAGR']*100:.2f}%\n"
+            context += f"- Jensen's Alpha (Outperformance): {metrics['Alpha']*100:.2f}%\n"
+            context += f"- Market Beta (Risk): {metrics['Beta']:.2f}\n"
+            context += f"- Sharpe Ratio (Efficiency): {metrics['Sharpe Ratio']:.2f}\n"
+            context += f"- Years Analyzed: {metrics['Years of Data']:.1f}\n\n"
+
+        # Use the fast, reliable model
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        # 2. DYNAMIC PROMPT ROUTING
+        if len(all_metrics) == 1:
+            # --- SCENARIO A: SINGLE FUND AUDIT ---
+            prompt = f"""
+            You are an elite Wall Street Wealth Manager. I am analyzing a SINGLE Indian mutual fund right now. 
+            Data:
+            {context}
+
+            Please provide a structured 3-part review:
+            1. **Performance Audit:** Analyze its Alpha (outperformance) and Sharpe Ratio. Is it actually beating the market efficiently?
+            2. **Investment Verdict:** Should the user [INVEST], [HOLD], or [AVOID] it? Justify with the math.
+            3. **Better Alternatives:** Based on its specific category, suggest 1 or 2 specific, well-known Indian mutual funds that are historically stronger alternatives to consider.
+            Keep it highly professional, concise, and structured with bullet points.
+            """
+        else:
+            # --- SCENARIO B: MULTI-FUND COMPARISON ---
+            prompt = f"""
+            You are an elite Wall Street Wealth Manager. I am comparing {len(all_metrics)} Indian mutual funds.
+            Data:
+            {context}
+
+            Please provide a structured 3-part comparison verdict:
+            1. **The Winner 🏆:** Explicitly name the absolute BEST fund out of the group.
+            2. **Why It Won:** Justify your choice by comparing its Alpha, Sharpe Ratio, and CAGR against the losers.
+            3. **Risk Warning:** Briefly mention if the winner takes on significantly more risk (Beta) to achieve those returns.
+            Keep it highly professional, punchy, and structured. Speak directly to the investor.
+            """
+        
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"⚠️ AI Advisor temporarily unavailable. Error: {e}"

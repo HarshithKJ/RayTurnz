@@ -5,7 +5,7 @@ import data_engine
 import time
 
 # 🚨 INITIALIZE AI KEY
-data_engine.configure_ai(api_key="AIzaSyAPvuVXjQw2BxdFsTflF7lGI9x5BZ2MG1")
+data_engine.configure_ai(api_key=st.secrets["GEMINI_API_KEY"])
 
 st.set_page_config(page_title="RayTurnz AI Stock Analyzer", layout="wide", page_icon="⚡")
 
@@ -97,18 +97,144 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Generate the Centered HTML text
-st.markdown('<p class="bolt-title">⚡ Ray AI Stock Analyzer</p>', unsafe_allow_html=True)
+st.markdown('<p class="bolt-title">⚡ RayTurnz AI Stock Analyzer</p>', unsafe_allow_html=True)
 st.markdown('<p class="bolt-subtitle">Your Smart AI Stock Decision Maker</p>', unsafe_allow_html=True)
 st.divider()
 
+# --- 1. PREPARE MUTUAL FUND DATA ---
+import plotly.graph_objects as go # Needed for the MF charts
+
+@st.cache_data(ttl=86400)
+def load_fund_choices():
+    raw_list = data_engine.get_mf_list()
+    if raw_list:
+        return {item['schemeName']: str(item['schemeCode']) for item in raw_list}
+    return {}
+
+fund_dict = load_fund_choices()
+
+# --- 2. DYNAMIC TOP NAVIGATION BAR ---
 col_ex, col_srch, col_emp = st.columns([1, 2, 1])
 with col_ex:
-    market = st.selectbox("🌍 Select Market", ["India (NSE)", "India (BSE)", "US (NASDAQ/NYSE)"])
+    market = st.selectbox("🌍 Select Market", ["India (NSE)", "India (BSE)", "US (NASDAQ/NYSE)", "Mutual Funds (India)"])
+
 with col_srch:
-    search_query = st.text_input("🔍 Search Company Name or Ticker (e.g., Wipro, ITC, Apple, AAPL)")
+    if market == "Mutual Funds (India)":
+        # Search bar magically turns into a dropdown when Mutual Funds is selected!
+       search_query = st.multiselect("🔍 Search & Compare up to 5 Funds", options=list(fund_dict.keys()), max_selections=5)
+    else:
+        # Standard stock search bar
+        search_query = st.text_input("🔍 Search Company Name or Ticker (e.g., Wipro, ITC, Apple, AAPL)")
 
 st.divider()
 
+# --- 3. MUTUAL FUND WORLD (THE SPLIT) ---
+if market == "Mutual Funds (India)" and search_query:
+    with st.status("⚙️ Running Quantitative Models...", expanded=True) as status:
+        all_fund_data = {}
+        all_metrics = {}
+        all_meta = {} # Holds the premium Fund Details
+        
+        for name in search_query:
+            code = fund_dict[name]
+            st.write(f"📡 Fetching lifetime history for: {name[:30]}...")
+            
+            merged_df, mf_meta, msg = data_engine.get_mf_and_benchmark(code)
+            
+            if merged_df is not None:
+                st.write(f"🧮 Calculating Alpha and Beta for {name[:30]}...")
+                all_fund_data[name] = merged_df
+                all_metrics[name] = data_engine.calculate_mf_metrics(merged_df)
+                all_meta[name] = mf_meta 
+            else:
+                st.error(f"Failed to fetch data for {name}: {msg}")
+        status.update(label="Comparison Complete!", state="complete", expanded=False)
+
+    if all_fund_data:
+        st.divider()
+        st.write("### 📈 Lifetime Growth Comparison (Rebased to ₹10,000)")
+        fig = go.Figure()
+        
+        # Benchmark Line
+        longest_fund_name = max(all_fund_data, key=lambda k: len(all_fund_data[k]))
+        bench_data = all_fund_data[longest_fund_name]['Benchmark_Close']
+        normalized_bench = (bench_data / bench_data.iloc[0]) * 10000
+        fig.add_trace(go.Scatter(x=normalized_bench.index, y=normalized_bench, mode='lines', name='NIFTY 50 (Benchmark)', line=dict(color='white', width=2, dash='dot')))
+        
+        # 5 Custom Colors for up to 5 funds
+        colors = ['#2ab7ca', '#fe4a90', '#ffcc00', '#00ffaa', '#b366ff']
+        for i, (name, df) in enumerate(all_fund_data.items()):
+            normalized_nav = (df['MF_NAV'] / df['MF_NAV'].iloc[0]) * 10000
+            short_name = name[:40] + "..." if len(name) > 40 else name
+            fig.add_trace(go.Scatter(x=normalized_nav.index, y=normalized_nav, mode='lines', name=short_name, line=dict(color=colors[i % len(colors)], width=2)))
+
+        fig.update_layout(height=450, margin=dict(l=0, r=0, t=30, b=0), hovermode='x unified')
+        st.plotly_chart(fig, use_container_width=True)
+        
+        st.write("### 📊 Institutional Quantitative Analysis")
+        cols = st.columns(len(all_metrics))
+        
+        for idx, (name, metrics) in enumerate(all_metrics.items()):
+            with cols[idx]:
+                with st.container(border=True):
+                    st.write(f"#### {name[:35]}")
+                    
+                    # --- 1. THE RAYTURNZ SCORE ---
+                    score = metrics.get('RayTurnz Score', 5.0)
+                    if score >= 8: st.success(f"🏆 RayTurnz Score: {score:.1f} / 10")
+                    elif score >= 5: st.warning(f"⚖️ RayTurnz Score: {score:.1f} / 10")
+                    else: st.error(f"⚠️ RayTurnz Score: {score:.1f} / 10")
+                    
+                    # --- 2. FUNDAMENTALS EXPANDER ---
+                    with st.expander("📋 Fund Fundamentals & Fees"):
+                        meta = all_meta[name]
+                        for k, v in meta.items():
+                            st.write(f"**{k}:** {v}")
+                    st.divider()
+                    
+                    # --- 3. ABSOLUTE RETURNS (Trailing) ---
+                    st.write("**Absolute Returns (Trailing)**")
+                    t1, t2, t3 = st.columns(3)
+                    t_ret = metrics.get('Trailing Returns', {})
+                    
+                    # Safely grab the trailing returns (some new funds might not have 5 years of data)
+                    y1 = f"{t_ret.get('1Y')*100:.1f}%" if t_ret.get('1Y') else "N/A"
+                    y3 = f"{t_ret.get('3Y')*100:.1f}%" if t_ret.get('3Y') else "N/A"
+                    y5 = f"{t_ret.get('5Y')*100:.1f}%" if t_ret.get('5Y') else "N/A"
+                    
+                    t1.metric("1 Year", y1)
+                    t2.metric("3 Year", y3)
+                    t3.metric("5 Year", y5)
+                    st.divider()
+
+                    # --- 4. RISK & OUTPERFORMANCE ---
+                    st.write("**Risk & Outperformance**")
+                    st.metric("Jensen's Alpha", f"{metrics.get('Alpha', 0)*100:.2f}%", help="Skill of the manager over the benchmark.")
+                    st.metric("Market Beta", f"{metrics.get('Beta', 1):.2f}", help="Sensitivity to market crashes. 1.0 is equal to the market.")
+                    st.metric("Sharpe Ratio", f"{metrics.get('Sharpe Ratio', 0):.2f}", help="Risk-adjusted efficiency.")
+                    st.divider()
+
+                    # --- 5. DOWNSIDE & DRAWDOWN ANALYSIS ---
+                    st.write("**Institutional Downside Analysis**")
+                    st.metric("Max Drawdown", f"{metrics.get('Max Drawdown', 0)*100:.1f}%", help="The absolute worst crash this fund has ever experienced.")
+                    st.metric("Sortino Ratio", f"{metrics.get('Sortino Ratio', 0):.2f}", help="Risk-adjusted return penalizing ONLY downside volatility.")
+                    st.caption(f"📈 Up Capture: {metrics.get('Up Capture', 100):.1f}% | 📉 Down Capture: {metrics.get('Down Capture', 100):.1f}%")
+
+        # --- 6. DYNAMIC AI WEALTH ADVISOR ---
+        st.divider()
+        st.subheader("🤖 RayTurnz AI Wealth Advisor")
+        
+        with st.spinner("Analyzing quantitative metrics and drafting final verdict..."):
+            ai_verdict = data_engine.generate_mf_verdict(all_metrics, all_meta)
+            with st.container(border=True):
+                st.markdown(ai_verdict)
+
+    # THE BRICK WALL
+    st.stop()
+
+
+# --- 4. STOCK WORLD ---
+# Because of the st.stop() above, the code below ONLY runs if the user searches for a Stock!
 if search_query:
     with st.status("⚡ Initializing RayTurnz AI Engine...", expanded=True) as status:
         
@@ -143,7 +269,6 @@ if search_query:
         with col_name:
             st.header(f"🏢 {info.get('longName', 'Company Name')} ({ticker_input})")
         with col_price:
-            # 👇 Notice how this is perfectly indented now!
             st.metric("Current Price", f"{info.get('currency', 'INR')} {c_price:.2f}", f"{m_return:.2f}% (1M)")
 
         # 👇 New Auto-Wrapping Red Flags Block 👇
@@ -223,24 +348,39 @@ if search_query:
 
         with tab2:
             col_f1, col_f2 = st.columns(2)
+            
+            # 👇 Helper function to build professional, aligned cards
+            def render_fundamental_card(title, data_dict, hero_key):
+                with st.container(border=True):
+                    st.write(f"### {title}")
+                    
+                    # 1. Pop out the most important metric at the top
+                    if hero_key in data_dict:
+                        st.metric(label=hero_key, value=data_dict[hero_key])
+                        st.divider()
+                    
+                    # 2. Align the rest of the metrics in a clean 2-column grid
+                    for k, v in data_dict.items():
+                        if k != hero_key:
+                            col_lbl, col_val = st.columns([3, 2])
+                            col_lbl.caption(k)
+                            col_val.markdown(f"**{v}**")
+
+            # 👇 Applying the new UI to your data
             with col_f1:
-                with st.container(border=True):
-                    st.write("### 💰 Valuation")
-                    val_data = data_engine.get_valuation(info)
-                    for k, v in val_data.items(): st.write(f"**{k}:** {v}")
-                with st.container(border=True):
-                    st.write("### 📊 Profitability")
-                    prof_data = data_engine.get_profitability(info)
-                    for k, v in prof_data.items(): st.write(f"**{k}:** {v}")
+                val_data = data_engine.get_valuation(info)
+                render_fundamental_card("💰 Valuation", val_data, "Trailing P/E")
+                
+                prof_data = data_engine.get_profitability(info)
+                render_fundamental_card("📊 Profitability", prof_data, "Profit Margin")
+                
             with col_f2:
-                with st.container(border=True):
-                    st.write("### 🏦 Financial Strength")
-                    fin_data = data_engine.get_financial_strength(info)
-                    for k, v in fin_data.items(): st.write(f"**{k}:** {v}")
-                with st.container(border=True):
-                    st.write("### 🚀 Growth")
-                    gro_data = data_engine.get_growth(info)
-                    for k, v in gro_data.items(): st.write(f"**{k}:** {v}")
+                fin_data = data_engine.get_financial_strength(info)
+                render_fundamental_card("🏦 Financial Strength", fin_data, "Current Ratio")
+                
+                gro_data = data_engine.get_growth(info)
+                render_fundamental_card("🚀 Growth", gro_data, "Revenue Growth")
+
         with tab3:
             st.write("### 🔬 Advanced Custom Metrics")
             st.caption("Calculated in real-time by scraping raw Income Statements and Balance Sheets.")
@@ -249,7 +389,6 @@ if search_query:
                 adv_metrics = data_engine.get_advanced_metrics(ticker_input, info)
                 
             if adv_metrics:
-                # Switched to 3 columns to fit Beta!
                 col_m1, col_m2, col_m3 = st.columns(3)
                 
                 with col_m1:
@@ -292,19 +431,13 @@ if search_query:
                         beta_data = adv_metrics['beta']
                         st.metric("Levered Beta (Reported)", f"{beta_data['levered']:.2f}")
                         
-                        # Show if debt is inflating the risk
                         delta_beta = beta_data['unlevered'] - beta_data['levered']
                         st.metric("Unlevered Beta (Asset)", f"{beta_data['unlevered']:.2f}", f"{delta_beta:.2f} Debt Impact", delta_color="inverse")
                         
                         st.write("**Inputs Used:**")
                         st.write(f"- **Effective Tax Rate (T):** {beta_data['tax_rate']*100:.1f}%")
                         st.write(f"- **Market D/E Ratio:** {beta_data['d_e_ratio']:.2f}x")
-                        st.write(f"- **Effective Tax Rate (T):** {beta_data['tax_rate']*100:.1f}%")
-                        st.write(f"- **Market D/E Ratio:** {beta_data['d_e_ratio']:.2f}x")
                         
-                # 👇 PASTE EVERYTHING BELOW THIS LINE 👇
-                
-                # --- RAW FINANCIALS DROP-DOWN ---
                 st.divider()
                 with st.expander("📄 Verify Raw Financial Statements (Source Data)"):
                     st.write("This is the raw accounting data extracted directly from the company's latest annual filings.")
@@ -316,7 +449,6 @@ if search_query:
                         st.write("#### Balance Sheet")
                         st.dataframe(adv_metrics['raw_data']['balance_sheet'], use_container_width=True)
                 
-                # --- NEW REGRESSION & CAPM SECTION ---
                 st.divider()
                 st.write("### 📈 Statistical Regression & CAPM Analysis")
                 st.caption(f"5-Year Monthly linear regression against market index.")
@@ -413,7 +545,6 @@ if search_query:
             st.divider()
 
             st.write("### 🤖 3. Generative AI Synthesis")
-            st.caption("Explainability Layer: Gemini AI synthesizes all indicators into a strategy.")
             
             with st.container(border=True):
                 if st.button("✨ Generate Hybrid AI Verdict", type="primary", use_container_width=True):
@@ -442,24 +573,27 @@ if search_query:
                         st.metric("Accuracy", backtest_data['weekly']['accuracy'])
                         color_week = "normal" if backtest_data['weekly']['beat'] else "inverse"
                         st.metric("Strategy Return", backtest_data['weekly']['return'], delta="Beat Market" if backtest_data['weekly']['beat'] else "Underperformed", delta_color=color_week)
-                
-                st.write("#### 🧠 What does this mean for you?")
                 try:
                     market_val = float(backtest_data['market_return'].replace('%', ''))
                     weekly_val = float(backtest_data['weekly']['return'].replace('%', ''))
+# --- DYNAMIC ACTIONABLE VERDICT ---
+                    st.divider()
+                    st.write("### 🎯 Final Quant Verdict (Live Action)")
                     
-                    if weekly_val > market_val:
-                        explanation = f"**Victory!** The AI's weekly strategy actively traded and made **{weekly_val:.2f}%**, beating the lazy 'Buy & Hold' approach. It successfully timed the market to maximize your profits."
-                    elif weekly_val > 0:
-                        explanation = f"**Safe but Cautious:** The AI made a solid **{weekly_val:.2f}%** profit, but just buying and holding would have made you **{market_val:.2f}%**. Why? The AI acts like a protective shield—when the market looks risky, it sells and holds cash. In a massive bull run, this cautious approach misses some upside, but it protects you from painful crashes."
+                    if sig_week == "BULLISH":
+                        st.success(f"**ACTION: BUY / ACCUMULATE**\n\n**Data-Driven Reasoning:** The Live Machine Learning model is projecting a **{str_week}** trend for the upcoming 5 days. Based on the historical backtest metrics above, the weekly predictive layer successfully filters out daily noise to identify statistically favorable entry points.")
+                    elif sig_week == "BEARISH":
+                        st.error(f"**ACTION: SELL / REDUCE EXPOSURE**\n\n**Data-Driven Reasoning:** The Live Machine Learning model is projecting a **{str_week}** trend for the upcoming 5 days. Historical backtesting indicates a high probability of downside risk. It is recommended to protect capital right now.")
                     else:
-                        explanation = "**Warning:** The AI struggled in this specific market condition and lost money. This proves why AI should be a *helper*, not a replacement for your own judgment."
-                        
-                    st.info(f"💡 {explanation}\n\n**Key Takeaway:** Notice how the **Weekly** accuracy is much better than the **Daily**. Predicting what a stock will do tomorrow is basically a coin flip (too much random noise), but predicting the next 5 days allows the AI to catch real, profitable trends!")
-                except:
+                        st.warning("**ACTION: HOLD / WAIT**\n\n**Data-Driven Reasoning:** The quantitative models are currently showing weak or conflicting probability distributions. It is mathematically safer to wait for a definitive breakout or breakdown.")
+
+                except Exception as e:
                     pass
+
             else:
                 st.warning("⚠️ Run `python train_model.py` to generate backtest results!")
+
+                    
 
         with tab5:
             st.write("### 🏦 Smart Money Tracker (Mutual Funds & Institutions)")
@@ -502,40 +636,54 @@ if search_query:
                     st.info("No Institutional holding data available for this specific stock on Yahoo Finance.")
 
         with tab6:
-            st.write("### 📰 Live Market News & AI Sentiment")
-            st.caption(f"Real-time news feed for {ticker_input}. Let the AI filter the noise.")
+            st.write("### 📰 Multi-API Live News & AI Consensus")
+            st.caption(f"Cross-verifying Yahoo, NewsData, GNews, and StockData for {ticker_input}.")
             
-            with st.spinner("Fetching global news feeds..."):
-                news_feed = data_engine.get_stock_news(ticker_input)
+            with st.spinner("Fetching data from all endpoints..."):
+                # Fetch all 4 sources
+                y_news = data_engine.get_stock_news(ticker_input) 
+                n_news = data_engine.get_newsdata_feed(ticker_input)
+                g_news = data_engine.get_gnews_feed(ticker_input)
+                s_news = data_engine.get_stockdata_feed(ticker_input)
                 
-            if news_feed:
-                # --- NEW FEATURE: AI SENTIMENT BUTTON ---
-                st.info("🧠 **Information Overload?** Let RayTurnz AI read these headlines and generate a quick sentiment summary.")
-                if st.button("✨ Generate AI News Report", type="primary", use_container_width=True):
-                    with st.spinner("AI is reading the news..."):
-                        ai_summary = data_engine.analyze_news_sentiment(news_feed, ticker_input)
-                        with st.container(border=True):
-                            st.markdown(ai_summary)
-                
-                st.divider()
-                
-                # --- UPGRADED UI: CLEANER NEWS CARDS ---
-                st.write("#### 🗞️ Latest Headlines")
-                
-                # Use a cleaner layout, avoiding the massive clunky boxes
-                for i, article in enumerate(news_feed[:15]): # Limit to top 15 for a clean look
-                    # Alternate colors slightly by using columns
-                    col_icon, col_text = st.columns([1, 15])
-                    
-                    with col_icon:
-                        st.markdown("📰" if i == 0 else "▫️")
-                        
-                    with col_text:
-                        st.markdown(f"**[{article['title']}]({article['link']})**")
-                        st.caption(f"**{article['publisher']}** • {article['time_str']}")
-                    
-                    # Add a subtle divider between articles instead of full borders
-                    st.markdown("<hr style='margin: 0px 0px 15px 0px; opacity: 0.2;'>", unsafe_allow_html=True)
-                    
-            else:
-                st.info("No recent news articles found for this ticker at the moment.")
+                all_news_payload = {
+                    "Yahoo Finance": y_news, 
+                    "NewsData.io": n_news, 
+                    "GNews": g_news,
+                    "StockData": s_news
+                }
+            
+            # --- MASTER AI BUTTON ---
+            st.info("🧠 **Information Asymmetry Check:** Let AI cross-verify all sources for a consensus verdict.")
+            if st.button("✨ Generate Master AI Consensus Report", type="primary", use_container_width=True):
+                with st.spinner("AI is analyzing and comparing all sources..."):
+                    ai_summary = data_engine.analyze_consensus_sentiment(all_news_payload, ticker_input)
+                    with st.container(border=True):
+                        st.markdown(ai_summary)
+            
+            st.divider()
+
+            # --- 4-COLUMN DASHBOARD LAYOUT ---
+            st.write("### 🌐 Global News Terminal")
+            
+            # Create 4 equal columns
+            col_y, col_g, col_n, col_s = st.columns(4)
+
+            # Define a helper to render a news column
+            def render_news_column(col, title, news_list, icon):
+                with col:
+                    st.markdown(f"#### {icon} {title}")
+                    if not news_list:
+                        st.caption("No data found.")
+                    else:
+                        with st.container(height=600, border=True):
+                            for n in news_list:
+                                st.markdown(f"**[{n.get('title', 'No Title')}]({n.get('link', '#')})**")
+                                st.caption(f"📅 {n.get('date', 'Today')}")
+                                st.divider()
+
+            # Map the 4 API sources to the 4 columns
+            render_news_column(col_y, "Yahoo Finance", y_news, "💹")
+            render_news_column(col_g, "Google News", g_news, "🔍")
+            render_news_column(col_n, "NewsData.io", n_news, "📡")
+            render_news_column(col_s, "StockData", s_news, "🏛️")
