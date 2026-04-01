@@ -85,40 +85,79 @@ def get_header_metrics(info, hist):
 # ==========================================
 # 4. DEEP FUNDAMENTALS CATEGORIES
 # ==========================================
+# ==========================================
+# 4. DEEP FUNDAMENTALS CATEGORIES
+# ==========================================
+# ==========================================
+# 4. DEEP FUNDAMENTALS CATEGORIES (INDIA OPTIMIZED)
+# ==========================================
 def get_red_flags(info):
-    """Conducts a comprehensive institutional 10-point risk scan."""
+    """Conducts a massive 20-point institutional risk scan with Indian Market Fallbacks."""
     flags = []
     
-    # 1. Profitability & Returns Risk
+    # --- 1. Profitability & Operations Risk ---
     if info.get("profitMargins") is not None and info.get("profitMargins") < 0:
         flags.append(("Negative Profit Margin", fmt_pct(info.get("profitMargins"))))
     if info.get("operatingMargins") is not None and info.get("operatingMargins") < 0:
         flags.append(("Negative Op Margin", fmt_pct(info.get("operatingMargins"))))
     if info.get("returnOnEquity") is not None and info.get("returnOnEquity") < 0:
         flags.append(("Negative ROE", fmt_pct(info.get("returnOnEquity"))))
+    if info.get("returnOnAssets") is not None and info.get("returnOnAssets") < 0:
+        flags.append(("Negative ROA (Inefficient)", fmt_pct(info.get("returnOnAssets"))))
         
-    # 2. Growth Trajectory Risk
+    # --- 2. Growth & Future Trajectory Risk ---
     if info.get("revenueGrowth") is not None and info.get("revenueGrowth") < 0:
         flags.append(("Declining Revenue", fmt_pct(info.get("revenueGrowth"))))
     if info.get("earningsGrowth") is not None and info.get("earningsGrowth") < 0:
         flags.append(("Declining Earnings", fmt_pct(info.get("earningsGrowth"))))
-        
-    # 3. Liquidity Risk (Short-term survival)
+
+    # --- 3. Liquidity Risk (Short-term survival) ---
     if info.get("currentRatio") is not None and info.get("currentRatio") < 1.0:
         flags.append(("Low Liquidity (CR < 1)", fmt_rat(info.get("currentRatio"))))
-    if info.get("quickRatio") is not None and info.get("quickRatio") < 0.8:
-        flags.append(("Poor Quick Ratio", fmt_rat(info.get("quickRatio"))))
         
-    # 4. Solvency Risk (Long-term survival)
+    # --- 4. Solvency Risk (Long-term survival) ---
     if info.get("debtToEquity") is not None and info.get("debtToEquity") > 150:
         flags.append(("High Debt/Equity", f"{info.get('debtToEquity'):.1f}%"))
         
-    # 5. Cash Flow & Valuation Risk
-    if info.get("freeCashflow") is not None and info.get("freeCashflow") < 0:
-        flags.append(("Cash Burn (Neg FCF)", fmt_num(info.get("freeCashflow"))))
+    # 👇 INDIA OVERRIDE: Catch Vodafone Idea (Yahoo hides D/E if Equity is negative)
+  # 👇 INDIA OVERRIDE: Catch Vodafone Idea (Yahoo hides D/E if Equity is negative)
+    if info.get("bookValue") is not None and info.get("bookValue") < 0:
+        bv = info.get("bookValue")
+        debt = info.get("totalDebt")
+        
+        # Format the debt nicely if it exists, otherwise leave it blank
+        debt_str = f" | Total Debt: {fmt_num(debt)}" if debt else ""
+        
+        flags.append(("Severe Solvency Risk", f"Book Value: {bv:.2f} per share{debt_str}"))
+        
+    # --- 5. Cash Flow & Earnings Quality Risk ---
+    fcf = info.get("freeCashflow")
+    ocf = info.get("operatingCashflow") # Used frequently in Indian reporting
+    net_income = info.get("netIncomeToCommon")
+    
+    if fcf is not None and fcf < 0:
+        flags.append(("Cash Burn (Neg FCF)", fmt_num(fcf)))
+    # 👇 INDIA OVERRIDE: If FCF is missing, check Operating Cash Flow
+    elif fcf is None and ocf is not None and ocf < 0:
+        flags.append(("Cash Burn (Neg OCF)", fmt_num(ocf)))
+        
+    if fcf is not None and net_income is not None and net_income > 0 and fcf < 0:
+        flags.append(("Poor Earnings Quality", "Profit > 0, but FCF < 0"))
+
+    # --- 6. Valuation & Bubble Risk ---
     if info.get("pegRatio") is not None and info.get("pegRatio") > 2.5:
         flags.append(("Overvalued (PEG > 2.5)", fmt_rat(info.get("pegRatio"))))
-        
+    if info.get("trailingPE") is not None and info.get("trailingPE") > 60:
+        flags.append(("Extreme Valuation (P/E)", f"{fmt_rat(info.get('trailingPE'))}x"))
+    if info.get("priceToBook") is not None and info.get("priceToBook") > 10:
+        flags.append(("High P/B Ratio", f"{fmt_rat(info.get('priceToBook'))}x"))
+
+    # --- 7. Smart Money & Market Sentiment Risk ---
+    if info.get("beta") is not None and info.get("beta") > 2.0:
+        flags.append(("Extreme Volatility (Beta)", fmt_rat(info.get("beta"))))
+    if info.get("heldPercentInstitutions") is not None and info.get("heldPercentInstitutions") < 0.05:
+        flags.append(("Low Institutional Backing", f"{fmt_pct(info.get('heldPercentInstitutions'))}"))
+
     return flags
 
 def get_ownership(info):
@@ -387,132 +426,103 @@ def analyze_news_sentiment(news_list, ticker):
         return f"⚠️ AI Analysis temporarily unavailable. Error: {e}"
 
 # ==========================================
-# 9. ADVANCED CUSTOM METRICS (RAW FINANCIALS)
+# 9. ADVANCED CUSTOM METRICS & MULTI-STAGE DCF INPUTS
 # ==========================================
 def get_advanced_metrics(ticker_input, info):
-    """Pulls raw accounting statements and calculates custom quant metrics."""
+    """Pulls raw accounting statements ONCE and calculates all custom quant metrics."""
     try:
         stock = yf.Ticker(ticker_input)
         bs = stock.balance_sheet
         inc = stock.financials
-        
-        # If Yahoo Finance is missing the statements, exit safely
-        if bs.empty or inc.empty:
+        cf = stock.cashflow # 👈 Fetching Cash Flow here!
+
+        if bs.empty or inc.empty or cf.empty:
             return None
             
-        # Grab the most recent annual column (Index 0)
         recent_bs = bs.iloc[:, 0]
         recent_inc = inc.iloc[:, 0]
+        recent_cf = cf.iloc[:, 0]
         
-        # Helper function to safely find rows even if Yahoo changes the names
-        def safe_extract(series, possible_keys):
+        def safe_extract(series, possible_keys, default=0.0):
+            if series is None or series.empty: return default
             for key in possible_keys:
                 if key in series.index and not pd.isna(series[key]):
                     return float(series[key])
-            return 0.0
+            return default
 
         # --- RAW DATA EXTRACTION ---
+        # Income Statement
         net_income = safe_extract(recent_inc, ['Net Income', 'Net Income Common Stockholders'])
         revenue = safe_extract(recent_inc, ['Total Revenue', 'Operating Revenue'])
-        ebit = safe_extract(recent_inc, ['EBIT', 'Operating Income'])
+        ebit = safe_extract(recent_inc, ['EBIT', 'Operating Income', 'Pretax Income'])
+        tax_provision = safe_extract(recent_inc, ['Tax Provision', 'Income Tax Expense'])
+        pretax_income = safe_extract(recent_inc, ['Pretax Income', 'Income Before Tax'])
         
+        # Cash Flow
+        capex = abs(safe_extract(recent_cf, ['Capital Expenditure', 'Payments For Property Plant And Equipment']))
+        depreciation = safe_extract(recent_cf, ['Depreciation And Amortization', 'Depreciation'])
+        chg_wc = safe_extract(recent_cf, ['Change In Working Capital'])
+
+        # Balance Sheet
         total_assets = safe_extract(recent_bs, ['Total Assets'])
         total_equity = safe_extract(recent_bs, ['Stockholders Equity', 'Total Stockholder Equity', 'Total Equity Gross Minority Interest'])
         total_liab = safe_extract(recent_bs, ['Total Liabilities Net Minority Interest', 'Total Liabilities'])
         current_assets = safe_extract(recent_bs, ['Current Assets'])
         current_liab = safe_extract(recent_bs, ['Current Liabilities'])
         retained_earnings = safe_extract(recent_bs, ['Retained Earnings'])
-        
-        market_cap = info.get('marketCap', 0.0)
-
-        # --- 1. DUPONT ANALYSIS COMPONENTS ---
-        net_profit_margin = (net_income / revenue) if revenue else 0
-        asset_turnover = (revenue / total_assets) if total_assets else 0
-        equity_multiplier = (total_assets / total_equity) if total_equity else 0
-        dupont_roe = net_profit_margin * asset_turnover * equity_multiplier
-
-        # --- 2. ALTMAN Z-SCORE (Bankruptcy Risk) ---
-        # Formula: Z = 1.2A + 1.4B + 3.3C + 0.6D + 1.0E
-        working_capital = current_assets - current_liab
-        A = working_capital / total_assets if total_assets else 0
-        B = retained_earnings / total_assets if total_assets else 0
-        C = ebit / total_assets if total_assets else 0
-        D = market_cap / total_liab if total_liab else 0
-        E = revenue / total_assets if total_assets else 0
-        
-        z_score = (1.2 * A) + (1.4 * B) + (3.3 * C) + (0.6 * D) + (1.0 * E)
-        
-        if z_score > 2.99:
-            z_zone = "Safe Zone 🟢"
-        elif z_score > 1.81:
-            z_zone = "Grey Zone 🟡"
-        else:
-            z_zone = "Distress Zone 🔴"
-
-        return {
-            "dupont": {
-                "roe": dupont_roe,
-                "net_margin": net_profit_margin,
-                "asset_turnover": asset_turnover,
-                "equity_multiplier": equity_multiplier
-            },
-            "altman": {
-                "score": z_score,
-                "zone": z_zone
-            }
-        }
-    except Exception as e:
-        return None
-
-# ==========================================
-# 9. ADVANCED CUSTOM METRICS (RAW FINANCIALS)
-# ==========================================
-def get_advanced_metrics(ticker_input, info):
-    """Pulls raw accounting statements and calculates custom quant metrics."""
-    try:
-        stock = yf.Ticker(ticker_input)
-        bs = stock.balance_sheet
-        inc = stock.financials
-        
-        if bs.empty or inc.empty:
-            return None
-            
-        recent_bs = bs.iloc[:, 0]
-        recent_inc = inc.iloc[:, 0]
-        
-        def safe_extract(series, possible_keys):
-            for key in possible_keys:
-                if key in series.index and not pd.isna(series[key]):
-                    return float(series[key])
-            return 0.0
-
-        # --- RAW DATA EXTRACTION ---
-        net_income = safe_extract(recent_inc, ['Net Income', 'Net Income Common Stockholders'])
-        revenue = safe_extract(recent_inc, ['Total Revenue', 'Operating Revenue'])
-        ebit = safe_extract(recent_inc, ['EBIT', 'Operating Income'])
-        tax_provision = safe_extract(recent_inc, ['Tax Provision', 'Income Tax Expense'])
-        pretax_income = safe_extract(recent_inc, ['Pretax Income', 'Income Before Tax'])
-        
-        total_assets = safe_extract(recent_bs, ['Total Assets'])
-        total_equity = safe_extract(recent_bs, ['Stockholders Equity', 'Total Stockholder Equity'])
-        total_liab = safe_extract(recent_bs, ['Total Liabilities Net Minority Interest', 'Total Liabilities'])
-        current_assets = safe_extract(recent_bs, ['Current Assets'])
-        current_liab = safe_extract(recent_bs, ['Current Liabilities'])
-        retained_earnings = safe_extract(recent_bs, ['Retained Earnings'])
-        total_debt_bs = safe_extract(recent_bs, ['Total Debt'])
+        total_debt_bs = safe_extract(recent_bs, ['Total Debt', 'Long Term Debt'])
+        cash = safe_extract(recent_bs, ['Cash And Cash Equivalents', 'Cash', 'Total Cash'])
+        minority_int = safe_extract(recent_bs, ['Minority Interest'])
         
         if total_debt_bs == 0: 
             total_debt_bs = info.get('totalDebt', 0.0)
             
         market_cap = info.get('marketCap', 0.0)
 
-        # --- 1. DUPONT ANALYSIS ---
+        # --- 1. DAMODARAN DCF INPUTS ---
+        tax_rate = (tax_provision / pretax_income) if pretax_income > 0 else 0.25
+        tax_rate = max(0.0, min(tax_rate, 0.40)) # Cap tax rate for sanity
+        ebit_after_tax = ebit * (1 - tax_rate)
+
+        reinvestment = capex - depreciation + chg_wc
+        reinvestment_rate = reinvestment / ebit_after_tax if ebit_after_tax > 0 else 0
+        reinvestment_rate = max(0.0, min(reinvestment_rate, 1.0))
+
+        invested_capital = total_debt_bs + total_equity - cash
+        roc = ebit_after_tax / invested_capital if invested_capital > 0 else 0
+        roc = max(0.01, min(roc, 0.50))
+        expected_growth = roc * reinvestment_rate
+
+        beta = info.get('beta', 1.0) or 1.0
+        rf_rate = 0.065 if "NS" in ticker_input or "BO" in ticker_input else 0.04
+        erp = 0.055
+        cost_of_equity = rf_rate + (beta * erp)
+        
+        cost_of_debt = 0.08
+        cost_of_debt_after_tax = cost_of_debt * (1 - tax_rate)
+        
+        total_capital = market_cap + total_debt_bs
+        weight_e = market_cap / total_capital if total_capital > 0 else 0.8
+        weight_d = total_debt_bs / total_capital if total_capital > 0 else 0.2
+        wacc = (weight_e * cost_of_equity) + (weight_d * cost_of_debt_after_tax)
+        
+        shares = info.get('sharesOutstanding', 1)
+
+        dcf_inputs = {
+            "success": True if ebit > 0 else False,
+            "ebit": ebit, "tax_rate": tax_rate, "ebit_after_tax": ebit_after_tax,
+            "reinvestment_rate": reinvestment_rate, "roc": roc, "expected_growth": expected_growth,
+            "wacc": wacc, "shares": shares, "total_debt": total_debt_bs, "cash": cash,
+            "minority_int": minority_int, "rf_rate": rf_rate, "currency": info.get("currency", "INR")
+        }
+
+        # --- 2. DUPONT ANALYSIS ---
         net_profit_margin = (net_income / revenue) if revenue else 0
         asset_turnover = (revenue / total_assets) if total_assets else 0
         equity_multiplier = (total_assets / total_equity) if total_equity else 0
         dupont_roe = net_profit_margin * asset_turnover * equity_multiplier
 
-        # --- 2. ALTMAN Z-SCORE ---
+        # --- 3. ALTMAN Z-SCORE ---
         working_capital = current_assets - current_liab
         A = working_capital / total_assets if total_assets else 0
         B = retained_earnings / total_assets if total_assets else 0
@@ -526,33 +536,17 @@ def get_advanced_metrics(ticker_input, info):
         elif z_score > 1.81: z_zone = "Grey Zone 🟡"
         else: z_zone = "Distress Zone 🔴"
 
-        # --- 3. LEVERED VS UNLEVERED BETA ---
-        levered_beta = info.get('beta', 0.0)
-        
-        # Calculate Effective Tax Rate
-        if pretax_income and pretax_income > 0:
-            tax_rate = tax_provision / pretax_income
-            tax_rate = max(0.0, min(tax_rate, 0.5)) # Cap between 0 and 50%
-        else:
-            tax_rate = 0.21 # Default corporate fallback
-            
-        # Market Debt-to-Equity
+        # --- 4. LEVERED VS UNLEVERED BETA ---
         d_e_ratio = (total_debt_bs / market_cap) if market_cap else 0.0
-        
-        if levered_beta:
-            unlevered_beta = levered_beta / (1 + ((1 - tax_rate) * d_e_ratio))
-        else:
-            unlevered_beta = 0.0
+        unlevered_beta = beta / (1 + ((1 - tax_rate) * d_e_ratio)) if beta else 0.0
 
-        # ... (Keep all the math above exactly the same) ...
-
+        # --- 5. THE MASTER PAYLOAD ---
         return {
             "dupont": {"roe": dupont_roe, "net_margin": net_profit_margin, "asset_turnover": asset_turnover, "equity_multiplier": equity_multiplier},
             "altman": {"score": z_score, "zone": z_zone},
-            "beta": {"levered": levered_beta, "unlevered": unlevered_beta, "tax_rate": tax_rate, "d_e_ratio": d_e_ratio},
-            
-            # 👇 THIS IS THE CRITICAL MISSING LINE 👇
-            "raw_data": {"income_statement": recent_inc, "balance_sheet": recent_bs}
+            "beta": {"levered": beta, "unlevered": unlevered_beta, "tax_rate": tax_rate, "d_e_ratio": d_e_ratio},
+            "dcf_inputs": dcf_inputs,  # The new data for the Valuation Tab
+            "raw_data": {"income_statement": recent_inc, "balance_sheet": recent_bs, "cash_flow": recent_cf} # Notice cf is included now!
         }
     except Exception as e:
         return None
@@ -857,27 +851,40 @@ def analyze_consensus_sentiment(all_news_payload, ticker):
         return response.text
     except Exception as e:
         return f"AI Error: {str(e)}"
-# ==========================================
-# 🏦 MUTUAL FUND ENGINE (MFAPI.in)
-# ==========================================
+        
 import requests
 import numpy as np
 from datetime import timedelta
 import pandas as pd
 import yfinance as yf
 import streamlit as st
+import time
 
-@st.cache_data(ttl=86400)
+import time
+
+# ==========================================
+# 13. MUTUAL FUND ENGINE (MFAPI.in)
+# ==========================================
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_mf_list():
-    """Fetches the master list of all Indian Mutual Funds"""
-    try:
-        url = "https://api.mfapi.in/mf"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        return []
-    except Exception as e:
-        return []
+    """Enterprise-grade fetcher with Retries and Bot-Bypass."""
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
+    url = "https://api.mfapi.in/mf"
+    
+    # Industry Standard: 3-Attempt Retry Loop
+    for attempt in range(3): 
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                if len(data) > 0:
+                    return data # Success! Return the 45,000 funds.
+        except Exception as e:
+            time.sleep(2) # Wait 2 seconds and try again if the connection drops
+            continue
+            
+    # If all 3 attempts fail, return empty
+    return []
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_premium_mf_data(fund_name):
@@ -1190,3 +1197,59 @@ def generate_mf_verdict(all_metrics, all_meta):
         return response.text
     except Exception as e:
         return f"⚠️ AI Advisor temporarily unavailable. Error: {e}"
+
+# ==========================================
+# 14. QUICK INTRINSIC VALUATION (For Fundamentals Tab)
+# ==========================================
+def calculate_intrinsic_value(info, current_price):
+    """
+    Calculates a quick Single-Stage DCF for the snapshot card.
+    """
+    try:
+        fcf = info.get("freeCashflow")
+        if fcf is None:
+            ocf = info.get("operatingCashflow")
+            if ocf is None or ocf <= 0:
+                return "N/A", "Negative/Missing Cashflow", "gray"
+            fcf = ocf 
+            
+        if fcf <= 0:
+            return "N/A", "Negative Cashflow", "gray"
+
+        cash = info.get("totalCash", 0) or 0
+        debt = info.get("totalDebt", 0) or 0
+        shares = info.get("sharesOutstanding")
+        
+        if not shares or shares == 0:
+            return "N/A", "Missing Share Count", "gray"
+
+        beta = info.get("beta", 1.0) or 1.0
+        wacc = max(0.08, min(0.065 + (beta * (0.12 - 0.065)), 0.16))
+        g = 0.03 
+        
+        if wacc <= g:
+            wacc = g + 0.02
+
+        terminal_value = (fcf * (1 + g)) / (wacc - g)
+        equity_value = terminal_value + cash - debt
+        
+        if equity_value <= 0:
+            return "N/A", "Debt Exceeds Value", "gray"
+            
+        intrinsic_value = equity_value / shares
+
+        if current_price and current_price > 0:
+            upside = ((intrinsic_value - current_price) / current_price) * 100
+            
+            if upside > 0:
+                delta_str = f"Undervalued by {upside:.1f}%"
+            else:
+                delta_str = f"Overvalued by {abs(upside):.1f}%"
+                
+            currency = "₹" if "NS" in info.get("symbol", "") or "BO" in info.get("symbol", "") else "$"
+            return f"{currency}{intrinsic_value:.2f}", delta_str, "gray"
+            
+        return f"{intrinsic_value:.2f}", "Fair Value Calculation", "gray"
+
+    except Exception as e:
+        return "Error", "Calculation Failed", "gray"

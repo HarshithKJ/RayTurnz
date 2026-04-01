@@ -1,13 +1,30 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import data_engine 
+import plotly.graph_objects as go 
+import json
+import os
 import time
+from streamlit_option_menu import option_menu
+import data_engine 
 
 # 🚨 INITIALIZE AI KEY
 data_engine.configure_ai(api_key=st.secrets["GEMINI_API_KEY"])
 
 st.set_page_config(page_title="RayTurnz AI Stock Analyzer", layout="wide", page_icon="⚡")
+
+# 👇 CUSTOM UI HELPER: Adaptive for both Light & Dark Mode 👇
+def draw_glass_card(title, value, subtext="", color="#a3a8b8"):
+    """Generates a sleek, glass-morphism metric card. 
+    Notice: No hardcoded text colors for the value, allowing Streamlit to adapt to Light/Dark mode natively."""
+    st.markdown(f"""
+    <div style="background-color: rgba(128, 128, 128, 0.05); border-radius: 10px; padding: 15px; border: 1px solid rgba(128, 128, 128, 0.1); height: 100%; transition: transform 0.3s ease;">
+        <p style="font-size: 13px; color: gray; margin-bottom: 5px; font-weight: 600;">{title}</p>
+        <p style="font-size: 24px; font-weight: 700; margin-bottom: 0px; line-height: 1.2;">{value}</p>
+        <p style="font-size: 12px; color: {color}; margin-top: 5px; margin-bottom: 0px;">{subtext}</p>
+    </div>
+    <br>
+    """, unsafe_allow_html=True)
 
 # 👇 CUSTOM CSS INJECTION FOR ANIMATIONS 👇
 st.markdown("""
@@ -25,34 +42,13 @@ st.markdown("""
         box-shadow: 0 8px 15px rgba(0, 0, 0, 0.1);
         border-color: #2ab7ca;
     }
+
+    /* Keep header accessible for settings, hide only the footer */
+    footer {visibility: hidden;}
     
-    /* Make the title pop AND center it */
-    .bolt-title {
-        background: -webkit-linear-gradient(45deg, #fe4a90, #2ab7ca);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-weight: 800;
-        font-size: 3.5em; 
-        margin-bottom: 0px;
-        text-align: center; 
-    }
-    
-    /* Center the subtitle too */
-    .bolt-subtitle {
-        text-align: center; 
-        font-size: 1.2em;
-        color: gray;
-        margin-bottom: 20px;
-        font-weight: 600;
-    }
-    
-    /* Styling the tabs to look more modern */
-    button[data-baseweb="tab"] {
-        font-size: 16px !important;
-        transition: all 0.2s ease-in-out;
-    }
-    button[data-baseweb="tab"]:hover {
-        color: #2ab7ca !important;
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 0rem;
     }
 
     /* --- THE BOUNCING DVD ANIMATION --- */
@@ -65,7 +61,7 @@ st.markdown("""
         z-index: 0;
         pointer-events: none;
         overflow: hidden;
-        opacity: 0.3;
+        opacity: 0.15; /* Lowered opacity so it doesn't clash in light mode */
     }
     .bounce-x {
         animation: moveX 15s linear infinite alternate;
@@ -96,19 +92,27 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Generate the Centered HTML text
-st.markdown('<p class="bolt-title">⚡ RayTurnz AI Stock Analyzer</p>', unsafe_allow_html=True)
-st.markdown('<p class="bolt-subtitle">Your Smart AI Stock Decision Maker</p>', unsafe_allow_html=True)
+# Centered adaptive title (Huge and visible in BOTH modes)
+st.write("#")
+st.markdown('<h1 style="text-align: center; font-size: 3.5rem; background: -webkit-linear-gradient(45deg, #fe4a90, #2ab7ca); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 900; margin-bottom: 0; padding-bottom: 0;">⚡ RayTurnz AI Stock Analyzer</h1>', unsafe_allow_html=True)
+st.markdown('<p style="text-align: center; font-size: 1.2em; color: gray; font-weight: 600; margin-top: -10px;">Your Smart AI Stock Decision Maker</p>', unsafe_allow_html=True)
 st.divider()
 
-# --- 1. PREPARE MUTUAL FUND DATA ---
-import plotly.graph_objects as go # Needed for the MF charts
-
-@st.cache_data(ttl=86400)
+# --- 1. PREPARE MUTUAL FUND DATA (ENTERPRISE CACHE ARCHITECTURE) ---
+@st.cache_data(show_spinner=False)
 def load_fund_choices():
+    if os.path.exists("mf_database.json"):
+        with open("mf_database.json", "r") as f:
+            return json.load(f)
+            
     raw_list = data_engine.get_mf_list()
-    if raw_list:
-        return {item['schemeName']: str(item['schemeCode']) for item in raw_list}
+    if raw_list and len(raw_list) > 0:
+        fund_dict = {item['schemeName']: str(item['schemeCode']) for item in raw_list}
+        with open("mf_database.json", "w") as f:
+            json.dump(fund_dict, f)
+        return fund_dict
+        
+    st.cache_data.clear()
     return {}
 
 fund_dict = load_fund_choices()
@@ -120,10 +124,8 @@ with col_ex:
 
 with col_srch:
     if market == "Mutual Funds (India)":
-        # Search bar magically turns into a dropdown when Mutual Funds is selected!
-       search_query = st.multiselect("🔍 Search & Compare up to 5 Funds", options=list(fund_dict.keys()), max_selections=5)
+        search_query = st.multiselect("🔍 Search & Compare up to 5 Funds", options=list(fund_dict.keys()), max_selections=5)
     else:
-        # Standard stock search bar
         search_query = st.text_input("🔍 Search Company Name or Ticker (e.g., Wipro, ITC, Apple, AAPL)")
 
 st.divider()
@@ -133,12 +135,11 @@ if market == "Mutual Funds (India)" and search_query:
     with st.status("⚙️ Running Quantitative Models...", expanded=True) as status:
         all_fund_data = {}
         all_metrics = {}
-        all_meta = {} # Holds the premium Fund Details
+        all_meta = {} 
         
         for name in search_query:
             code = fund_dict[name]
             st.write(f"📡 Fetching lifetime history for: {name[:30]}...")
-            
             merged_df, mf_meta, msg = data_engine.get_mf_and_benchmark(code)
             
             if merged_df is not None:
@@ -155,20 +156,18 @@ if market == "Mutual Funds (India)" and search_query:
         st.write("### 📈 Lifetime Growth Comparison (Rebased to ₹10,000)")
         fig = go.Figure()
         
-        # Benchmark Line
         longest_fund_name = max(all_fund_data, key=lambda k: len(all_fund_data[k]))
         bench_data = all_fund_data[longest_fund_name]['Benchmark_Close']
         normalized_bench = (bench_data / bench_data.iloc[0]) * 10000
-        fig.add_trace(go.Scatter(x=normalized_bench.index, y=normalized_bench, mode='lines', name='NIFTY 50 (Benchmark)', line=dict(color='white', width=2, dash='dot')))
+        fig.add_trace(go.Scatter(x=normalized_bench.index, y=normalized_bench, mode='lines', name='NIFTY 50 (Benchmark)', line=dict(color='gray', width=2, dash='dot')))
         
-        # 5 Custom Colors for up to 5 funds
         colors = ['#2ab7ca', '#fe4a90', '#ffcc00', '#00ffaa', '#b366ff']
         for i, (name, df) in enumerate(all_fund_data.items()):
             normalized_nav = (df['MF_NAV'] / df['MF_NAV'].iloc[0]) * 10000
             short_name = name[:40] + "..." if len(name) > 40 else name
             fig.add_trace(go.Scatter(x=normalized_nav.index, y=normalized_nav, mode='lines', name=short_name, line=dict(color=colors[i % len(colors)], width=2)))
 
-        fig.update_layout(height=450, margin=dict(l=0, r=0, t=30, b=0), hovermode='x unified')
+        fig.update_layout(height=450, margin=dict(l=0, r=0, t=30, b=0), hovermode='x unified', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
         st.plotly_chart(fig, use_container_width=True)
         
         st.write("### 📊 Institutional Quantitative Analysis")
@@ -179,81 +178,64 @@ if market == "Mutual Funds (India)" and search_query:
                 with st.container(border=True):
                     st.write(f"#### {name[:35]}")
                     
-                    # --- 1. THE RAYTURNZ SCORE ---
                     score = metrics.get('RayTurnz Score', 5.0)
                     if score >= 8: st.success(f"🏆 RayTurnz Score: {score:.1f} / 10")
                     elif score >= 5: st.warning(f"⚖️ RayTurnz Score: {score:.1f} / 10")
                     else: st.error(f"⚠️ RayTurnz Score: {score:.1f} / 10")
                     
-                    # --- 2. FUNDAMENTALS EXPANDER ---
                     with st.expander("📋 Fund Fundamentals & Fees"):
                         meta = all_meta[name]
                         for k, v in meta.items():
                             st.write(f"**{k}:** {v}")
                     st.divider()
                     
-                    # --- 3. ABSOLUTE RETURNS (Trailing) ---
                     st.write("**Absolute Returns (Trailing)**")
                     t1, t2, t3 = st.columns(3)
                     t_ret = metrics.get('Trailing Returns', {})
                     
-                    # Safely grab the trailing returns (some new funds might not have 5 years of data)
                     y1 = f"{t_ret.get('1Y')*100:.1f}%" if t_ret.get('1Y') else "N/A"
                     y3 = f"{t_ret.get('3Y')*100:.1f}%" if t_ret.get('3Y') else "N/A"
                     y5 = f"{t_ret.get('5Y')*100:.1f}%" if t_ret.get('5Y') else "N/A"
                     
-                    t1.metric("1 Year", y1)
-                    t2.metric("3 Year", y3)
-                    t3.metric("5 Year", y5)
-                    st.divider()
+                    with t1: draw_glass_card("1 Year", y1)
+                    with t2: draw_glass_card("3 Year", y3)
+                    with t3: draw_glass_card("5 Year", y5)
 
-                    # --- 4. RISK & OUTPERFORMANCE ---
                     st.write("**Risk & Outperformance**")
-                    st.metric("Jensen's Alpha", f"{metrics.get('Alpha', 0)*100:.2f}%", help="Skill of the manager over the benchmark.")
-                    st.metric("Market Beta", f"{metrics.get('Beta', 1):.2f}", help="Sensitivity to market crashes. 1.0 is equal to the market.")
-                    st.metric("Sharpe Ratio", f"{metrics.get('Sharpe Ratio', 0):.2f}", help="Risk-adjusted efficiency.")
-                    st.divider()
+                    draw_glass_card("Jensen's Alpha", f"{metrics.get('Alpha', 0)*100:.2f}%", "Skill over benchmark")
+                    draw_glass_card("Market Beta", f"{metrics.get('Beta', 1):.2f}", "Sensitivity to market")
+                    draw_glass_card("Sharpe Ratio", f"{metrics.get('Sharpe Ratio', 0):.2f}", "Risk-adjusted return")
 
-                    # --- 5. DOWNSIDE & DRAWDOWN ANALYSIS ---
                     st.write("**Institutional Downside Analysis**")
-                    st.metric("Max Drawdown", f"{metrics.get('Max Drawdown', 0)*100:.1f}%", help="The absolute worst crash this fund has ever experienced.")
-                    st.metric("Sortino Ratio", f"{metrics.get('Sortino Ratio', 0):.2f}", help="Risk-adjusted return penalizing ONLY downside volatility.")
+                    draw_glass_card("Max Drawdown", f"{metrics.get('Max Drawdown', 0)*100:.1f}%", "Worst historical crash", "#ff4b4b")
+                    draw_glass_card("Sortino Ratio", f"{metrics.get('Sortino Ratio', 0):.2f}", "Downside risk efficiency")
                     st.caption(f"📈 Up Capture: {metrics.get('Up Capture', 100):.1f}% | 📉 Down Capture: {metrics.get('Down Capture', 100):.1f}%")
 
-        # --- 6. DYNAMIC AI WEALTH ADVISOR ---
         st.divider()
         st.subheader("🤖 RayTurnz AI Wealth Advisor")
-        
         with st.spinner("Analyzing quantitative metrics and drafting final verdict..."):
             ai_verdict = data_engine.generate_mf_verdict(all_metrics, all_meta)
             with st.container(border=True):
                 st.markdown(ai_verdict)
 
-    # THE BRICK WALL
     st.stop()
 
 
 # --- 4. STOCK WORLD ---
-# Because of the st.stop() above, the code below ONLY runs if the user searches for a Stock!
 if search_query:
     with st.status("⚡ Initializing RayTurnz AI Engine...", expanded=True) as status:
-        
-        # 1. Convert name to ticker while respecting the market dropdown!
         st.write("🔍 Resolving company name...")
         raw_ticker = data_engine.resolve_ticker(search_query, market)
         st.write(f"✅ Auto-detected Ticker: **{raw_ticker}**")
         
-        # 2. Fetch the data (we pass market="Auto" because raw_ticker already has the .NS or .BO attached now)
         st.write("📡 Connecting to global market feeds...")
         success, ticker_input, info, hist = data_engine.fetch_stock_data(raw_ticker, market="Auto")
         
         if success:
             st.write("🧮 Calculating momentum indicators...")
             hist = data_engine.calculate_technicals(hist)
-            
             st.write("🧠 Querying institutional holding records...")
             time.sleep(0.5) 
-            
             status.update(label="Analysis Complete!", state="complete", expanded=False)
             st.toast(f"Successfully loaded data for {ticker_input}!", icon="✅")
         else:
@@ -262,16 +244,16 @@ if search_query:
     if not success:
         st.error(f"⚠️ Could not fetch data for {raw_ticker} in the {market} market.")
     else:
-        # 👇 EVERYTHING BELOW HERE IS INSIDE THE 'ELSE' BLOCK 👇
         c_price, trend, m_return, pos, zone = data_engine.get_header_metrics(info, hist)
 
         col_name, col_price = st.columns([3, 1])
         with col_name:
             st.header(f"🏢 {info.get('longName', 'Company Name')} ({ticker_input})")
         with col_price:
-            st.metric("Current Price", f"{info.get('currency', 'INR')} {c_price:.2f}", f"{m_return:.2f}% (1M)")
+            p_color = "#2ab7ca" if m_return >= 0 else "#ff4b4b"
+            draw_glass_card("Current Price", f"{info.get('currency', 'INR')} {c_price:.2f}", f"{m_return:.2f}% (1M)", p_color)
 
-        # 👇 New Auto-Wrapping Red Flags Block 👇
+        # Red Flags Block
         red_flags = data_engine.get_red_flags(info)
         red_flags_text = "None"
         
@@ -279,23 +261,23 @@ if search_query:
             st.success("✅ **System Scan:** No major fundamental red flags detected.")
         else:
             st.error(f"⚠️ **Risk Alert:** The system detected {len(red_flags)} major red flags.")
-            
-            # Create a string of flags for the Gemini AI prompt later
             red_flags_text = ", ".join([f"{f[0]} ({f[1]})" for f in red_flags])
             
-            # Dynamically wrap the UI metrics into rows of 4
             cols_per_row = 4
             for i in range(0, len(red_flags), cols_per_row):
                 cols = st.columns(cols_per_row)
                 for j in range(cols_per_row):
                     if i + j < len(red_flags):
-                        f_name, f_val = red_flags[i + j]
                         with cols[j]:
-                            st.metric(label=f_name, value=f_val, delta="Negative Indicator", delta_color="inverse")
+                            # Native styling handles Dark/Light Mode adaptiveness automatically
+                            with st.container(border=True):
+                                f_name, f_val = red_flags[i + j]
+                                st.markdown(f'<p style="font-size: 14px; color: gray; margin-bottom: 0px; font-weight: 600; line-height: 1;">{f_name}</p>', unsafe_allow_html=True)
+                                st.markdown(f'## {f_val}')
+                                st.markdown(f'<p style="font-size: 14px; color: #ff4b4b; margin-top: -10px; font-weight: 500;">↑ Negative Indicator</p>', unsafe_allow_html=True)
 
         st.divider()
 
-        # --- SAFE TECHNICALS CHECK ---
         if not hist.empty:
             latest = hist.iloc[-1]
             c_rsi, c_macd = latest['RSI'], latest['MACD']
@@ -303,10 +285,46 @@ if search_query:
             latest = None
             c_rsi, c_macd = None, None
 
-        # --- TABS DECLARATION ---
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Market Overview", "💼 Deep Fundamentals", "🔬 Advanced Metrics", "🤖 AI Decision Support", "🏦 Fund Holdings", "📰 Live News"])
+        # --- MODERN WEBSITE NAVIGATION BAR ---
+        # --- MODERN WEBSITE NAVIGATION BAR ---
+        selected_tab = option_menu(
+            menu_title=None, 
+            options=["Overview", "Fundamentals", "Valuation", "Advanced Metrics", "AI Support", "Holdings", "News"], 
+            icons=["activity", "briefcase", "cash-coin", "calculator", "robot", "bank", "newspaper"], 
+            default_index=0, 
+            orientation="horizontal",
+            styles={
+                "container": {
+                    "padding": "8px!important", 
+                    "background-color": "rgba(128, 128, 128, 0.08)", 
+                    "border-radius": "15px", 
+                    "margin-bottom": "25px",
+                    "border": "1px solid rgba(128, 128, 128, 0.1)"
+                },
+                "icon": {
+                    "font-size": "18px", # Larger icons
+                }, 
+                "nav-link": {
+                    "font-size": "16px", # Larger text
+                    "text-align": "center", 
+                    "margin": "0px 5px", # Adds space between the tabs
+                    "padding": "12px 15px", # Makes the tabs thicker and more clickable
+                    "color": "gray", 
+                    "font-weight": "700",
+                    "border-radius": "10px", # Rounds the individual buttons
+                    "--hover-color": "rgba(128, 128, 128, 0.15)", # Subtle hover effect
+                    "transition": "all 0.2s ease-in-out"
+                },
+                "nav-link-selected": {
+                    "background-color": "#2ab7ca", # Solid teal background
+                    "color": "white", # Forces white text on the active tab
+                    "font-weight": "800",
+                    "box-shadow": "0 4px 15px rgba(42, 183, 202, 0.4)" # Adds a premium glow effect
+                },
+            }
+        )
 
-        with tab1:
+        if selected_tab == "Overview":
             col_t1, col_t2 = st.columns(2)
             with col_t1:
                 with st.container(border=True):
@@ -319,7 +337,7 @@ if search_query:
                         df_holdings = pd.DataFrame({"Category": ["Promoters", "Institutions", "Public"], "Holding": [ins, inst, pub]})
                         fig = px.pie(df_holdings, values="Holding", names="Category", hole=0.6, color_discrete_sequence=px.colors.sequential.Teal)
                         fig.update_traces(textposition='inside', textinfo='percent+label', showlegend=False, hoverinfo="label+percent")
-                        fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300)
+                        fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                         st.plotly_chart(fig, use_container_width=True)
 
             with col_t2:
@@ -346,31 +364,44 @@ if search_query:
                         with chart_tabs[6]: display_dynamic_chart(hist['Close'].tail(1260), "5Y")
                         with chart_tabs[7]: display_dynamic_chart(hist['Close'], "Max")
 
-        with tab2:
+        elif selected_tab == "Fundamentals":
+            st.write("### 💰 Deep Valuation & Intrinsic Math")
+            
+            current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+            dcf_value, dcf_delta, dcf_color = data_engine.calculate_intrinsic_value(info, current_price)
+            
+            val_data = data_engine.get_valuation(info)
+            trailing_pe = val_data.get("Trailing P/E", "N/A")
+            forward_pe = val_data.get("Forward P/E", "N/A")
+            peg = val_data.get("PEG Ratio", "N/A")
+
+            val_col1, val_col2, val_col3, val_col4 = st.columns(4)
+            with val_col1:
+                dcf_hex = "#2ab7ca" if "Undervalued" in dcf_delta else "#ff4b4b" if "Overvalued" in dcf_delta else "gray"
+                draw_glass_card("Intrinsic Value (DCF)", dcf_value, dcf_delta, dcf_hex)
+            with val_col2:
+                draw_glass_card("Trailing P/E", trailing_pe)
+            with val_col3:
+                draw_glass_card("Forward P/E", forward_pe)
+            with val_col4:
+                draw_glass_card("PEG Ratio", peg)
+                
+            st.divider()
+                
             col_f1, col_f2 = st.columns(2)
             
-            # 👇 Helper function to build professional, aligned cards
             def render_fundamental_card(title, data_dict, hero_key):
                 with st.container(border=True):
-                    st.write(f"### {title}")
-                    
-                    # 1. Pop out the most important metric at the top
+                    st.write(f"#### {title}")
                     if hero_key in data_dict:
-                        st.metric(label=hero_key, value=data_dict[hero_key])
-                        st.divider()
-                    
-                    # 2. Align the rest of the metrics in a clean 2-column grid
+                        draw_glass_card(hero_key, str(data_dict[hero_key]))
                     for k, v in data_dict.items():
                         if k != hero_key:
                             col_lbl, col_val = st.columns([3, 2])
                             col_lbl.caption(k)
                             col_val.markdown(f"**{v}**")
 
-            # 👇 Applying the new UI to your data
             with col_f1:
-                val_data = data_engine.get_valuation(info)
-                render_fundamental_card("💰 Valuation", val_data, "Trailing P/E")
-                
                 prof_data = data_engine.get_profitability(info)
                 render_fundamental_card("📊 Profitability", prof_data, "Profit Margin")
                 
@@ -378,10 +409,11 @@ if search_query:
                 fin_data = data_engine.get_financial_strength(info)
                 render_fundamental_card("🏦 Financial Strength", fin_data, "Current Ratio")
                 
-                gro_data = data_engine.get_growth(info)
-                render_fundamental_card("🚀 Growth", gro_data, "Revenue Growth")
+            st.divider()
+            gro_data = data_engine.get_growth(info)
+            render_fundamental_card("🚀 Growth Trajectory", gro_data, "Revenue Growth")
 
-        with tab3:
+        elif selected_tab == "Advanced Metrics":
             st.write("### 🔬 Advanced Custom Metrics")
             st.caption("Calculated in real-time by scraping raw Income Statements and Balance Sheets.")
             
@@ -395,11 +427,10 @@ if search_query:
                     with st.container(border=True):
                         st.write("#### 📊 DuPont Analysis")
                         st.caption("Deconstructs Return on Equity to see *how* returns are generated.")
-                        
                         st.markdown(r"$$ROE = \frac{Net Income}{Sales} \times \frac{Sales}{Assets} \times \frac{Assets}{Equity}$$")
                         
                         dupont = adv_metrics['dupont']
-                        st.metric("Implied ROE", f"{dupont['roe']*100:.2f}%")
+                        draw_glass_card("Implied ROE", f"{dupont['roe']*100:.2f}%")
                         
                         st.write("**The 3 Pillars:**")
                         st.write(f"- **Net Profit Margin:** {dupont['net_margin']*100:.2f}% *(Profitability)*")
@@ -410,11 +441,11 @@ if search_query:
                     with st.container(border=True):
                         st.write("#### 🚨 Altman Z-Score")
                         st.caption("A credit-strength test that predicts bankruptcy risk.")
-                        
                         st.markdown(r"$$Z = 1.2X_1 + 1.4X_2 + 3.3X_3 + 0.6X_4 + 1.0X_5$$")
                         
                         altman = adv_metrics['altman']
-                        st.metric("Z-Score", f"{altman['score']:.2f}", altman['zone'], delta_color="off")
+                        z_color = "#2ab7ca" if "Safe" in altman['zone'] else "#ff4b4b" if "Distress" in altman['zone'] else "#ffcc00"
+                        draw_glass_card("Z-Score", f"{altman['score']:.2f}", altman['zone'], z_color)
                         
                         st.write("**Score Guide:**")
                         st.write("- **> 2.99:** Safe Zone (Financially Sound)")
@@ -425,14 +456,13 @@ if search_query:
                     with st.container(border=True):
                         st.write("#### 📈 Volatility (Beta)")
                         st.caption("Strips out the impact of debt to show pure asset volatility.")
-                        
                         st.markdown(r"$$\beta_U = \frac{\beta_L}{1 + ((1 - T) \times \frac{D}{E})}$$")
                         
                         beta_data = adv_metrics['beta']
-                        st.metric("Levered Beta (Reported)", f"{beta_data['levered']:.2f}")
+                        draw_glass_card("Levered Beta", f"{beta_data['levered']:.2f}")
                         
                         delta_beta = beta_data['unlevered'] - beta_data['levered']
-                        st.metric("Unlevered Beta (Asset)", f"{beta_data['unlevered']:.2f}", f"{delta_beta:.2f} Debt Impact", delta_color="inverse")
+                        draw_glass_card("Unlevered Beta", f"{beta_data['unlevered']:.2f}", f"{delta_beta:.2f} Debt Impact")
                         
                         st.write("**Inputs Used:**")
                         st.write(f"- **Effective Tax Rate (T):** {beta_data['tax_rate']*100:.1f}%")
@@ -440,7 +470,6 @@ if search_query:
                         
                 st.divider()
                 with st.expander("📄 Verify Raw Financial Statements (Source Data)"):
-                    st.write("This is the raw accounting data extracted directly from the company's latest annual filings.")
                     col_raw1, col_raw2 = st.columns(2)
                     with col_raw1:
                         st.write("#### Income Statement")
@@ -451,58 +480,192 @@ if search_query:
                 
                 st.divider()
                 st.write("### 📈 Statistical Regression & CAPM Analysis")
-                st.caption(f"5-Year Monthly linear regression against market index.")
                 
                 with st.spinner("Running statistical regression..."):
                     reg_data = data_engine.calculate_beta_regression(ticker_input, market)
                     
                 if reg_data:
                     col_reg1, col_reg2 = st.columns(2)
-                    
                     beta = reg_data['beta']
                     se = reg_data['std_err']
                     r2 = reg_data['r_squared']
                     
                     with col_reg1:
                         with st.container(border=True):
-                            st.write("#### 1. Performance vs Market (Jensen's Alpha)")
-                            st.caption("How well did the stock do relative to the market?")
+                            st.write("#### Performance vs Market (Jensen's Alpha)")
                             st.latex(r"$$ \alpha = Intercept - \frac{R_f}{n}(1 - \beta) $$")
-                            
                             alpha = reg_data['jensens_alpha_ann'] * 100
-                            st.metric("Annualized Jensen's Alpha", f"{alpha:.2f}%", 
-                                      "Outperformed Expectations" if alpha > 0 else "Underperformed Expectations", 
-                                      delta_color="normal" if alpha > 0 else "inverse")
+                            a_color = "#2ab7ca" if alpha > 0 else "#ff4b4b"
+                            draw_glass_card("Annualized Jensen's Alpha", f"{alpha:.2f}%", "Outperformed" if alpha > 0 else "Underperformed", a_color)
                             
                         with st.container(border=True):
-                            st.write("#### 2. Risk Decomposition ($R^2$)")
-                            st.caption("What proportion of risk is attributable to the market vs. firm-specific?")
+                            st.write("#### Risk Decomposition ($R^2$)")
                             st.write(f"**Market Risk (Systematic):** {r2 * 100:.1f}%")
                             st.write(f"**Firm-Specific Risk (Idiosyncratic):** {(1 - r2) * 100:.1f}%")
                             
                     with col_reg2:
                         with st.container(border=True):
-                            st.write("#### 3. Beta Estimate Ranges")
-                            st.caption("Historical estimate of beta and probability ranges.")
-                            
+                            st.write("#### Beta Estimate Ranges")
                             st.write(f"**Historical Beta:** {beta:.2f}")
                             st.write(f"**67% Probability Range:** {(beta - se):.2f} to {(beta + se):.2f}")
                             st.write(f"**95% Probability Range:** {(beta - 2*se):.2f} to {(beta + 2*se):.2f}")
-                            st.caption(f"Standard Error = {se:.4f}")
                             
                         with st.container(border=True):
-                            st.write("#### 4. Required Return (CAPM)")
-                            st.caption("Based on this beta, what is the required return?")
+                            st.write("#### Required Return (CAPM)")
                             st.latex(r"$$ E(R) = R_f + \beta \times Market Premium $$")
-                            
                             req_ret = reg_data['required_return'] * 100
-                            st.metric("Cost of Equity (Required Return)", f"{req_ret:.2f}%")
+                            draw_glass_card("Cost of Equity (Required Return)", f"{req_ret:.2f}%")
                             st.caption(f"Inputs: Risk-Free Rate = {reg_data['rf_rate']*100:.1f}%, Risk Premium = {reg_data['market_premium']*100:.1f}%")
                             
             else:
                 st.info("Raw financial statements are currently unavailable for this ticker to calculate advanced metrics.")
 
-        with tab4:
+        elif selected_tab == "Valuation":
+            st.write("### 🧮 Multi-Stage Intrinsic Valuation Calculator")
+            st.caption("Based on Aswath Damodaran's Free Cash Flow to Firm (FCFF) methodology. Adjust the assumptions below to see how the valuation changes dynamically.")
+            
+            with st.spinner("Extracting raw accounting statements to build model..."):
+                # We use the master function we just built!
+                adv_metrics = data_engine.get_advanced_metrics(ticker_input, info)
+                
+            if adv_metrics and adv_metrics.get("dcf_inputs", {}).get("success"):
+                dcf_inputs = adv_metrics["dcf_inputs"]
+                
+                # 1. THE INTERACTIVE CALCULATOR (Assumptions)
+                st.write("#### 1. Core Assumptions (Editable)")
+                col_i1, col_i2, col_i3, col_i4 = st.columns(4)
+                
+                # Safe clamping to prevent Streamlit slider crashes
+                safe_wacc = max(1.0, min(dcf_inputs["wacc"]*100, 50.0))
+                safe_growth = max(-50.0, min(dcf_inputs["expected_growth"]*100, 100.0))
+                safe_reinv = max(-100.0, min(dcf_inputs["reinvestment_rate"]*100, 200.0))
+                safe_term = max(0.0, min(dcf_inputs["rf_rate"]*100, 10.0))
+
+                with col_i1:
+                    user_wacc = st.number_input("Cost of Capital (WACC) %", min_value=1.0, max_value=50.0, value=float(safe_wacc), step=0.5) / 100
+                with col_i2:
+                    user_growth = st.number_input("Expected Growth (Y1-Y5) %", min_value=-50.0, max_value=100.0, value=float(safe_growth), step=0.5) / 100
+                with col_i3:
+                    user_reinv = st.number_input("Reinvestment Rate %", min_value=-100.0, max_value=200.0, value=float(safe_reinv), step=1.0) / 100
+                with col_i4:
+                    user_term_growth = st.number_input("Terminal Growth Rate %", min_value=0.0, max_value=10.0, value=float(safe_term), step=0.5) / 100
+
+                # 2. RUNNING THE 10-YEAR MATH
+                years = list(range(1, 11))
+                ebit_t, reinv_t, fcff_t, pv_t = [], [], [], []
+                
+                curr_ebit = dcf_inputs["ebit_after_tax"]
+                cum_discount = 1.0
+                sum_pv = 0.0
+                
+                for year in years:
+                    # High growth for first 5 years, linearly decaying to terminal growth by year 10
+                    if year <= 5:
+                        g = user_growth
+                    else:
+                        g = user_growth - ((user_growth - user_term_growth) / 5) * (year - 5)
+                        
+                    curr_ebit = curr_ebit * (1 + g)
+                    ebit_t.append(curr_ebit)
+                    
+                    # Reinvestment
+                    reinv = curr_ebit * user_reinv
+                    reinv_t.append(reinv)
+                    
+                    # Free Cash Flow to Firm
+                    fcff = curr_ebit - reinv
+                    fcff_t.append(fcff)
+                    
+                    # Present Value
+                    cum_discount = cum_discount * (1 + user_wacc)
+                    pv = fcff / cum_discount
+                    pv_t.append(pv)
+                    sum_pv += pv
+                    
+                # Terminal Value Math
+                term_roc = user_wacc # In stable growth, ROC approaches Cost of Capital
+                term_reinv_rate = user_term_growth / term_roc if term_roc > 0 else 0
+                term_ebit = ebit_t[-1] * (1 + user_term_growth)
+                term_fcff = term_ebit * (1 - term_reinv_rate)
+                
+                terminal_value = term_fcff / (user_wacc - user_term_growth) if user_wacc > user_term_growth else 0
+                pv_terminal = terminal_value / cum_discount if terminal_value > 0 else 0
+
+                # 3. DISPLAY THE DAMODARAN TABLE
+                st.write("#### 2. 10-Year Cash Flow Projection")
+                df_dcf = pd.DataFrame({
+                    "Year": years,
+                    "EBIT(1-t)": ebit_t,
+                    "Reinvestment": reinv_t,
+                    "FCFF": fcff_t,
+                    "Present Value": pv_t
+                })
+                
+                # Format for display
+                curr_sym = dcf_inputs["currency"]
+                df_display = df_dcf.copy()
+                for col in ["EBIT(1-t)", "Reinvestment", "FCFF", "Present Value"]:
+                    df_display[col] = df_display[col].apply(lambda x: f"{curr_sym} {x:,.0f}")
+                
+                st.dataframe(df_display.set_index("Year"), use_container_width=True)
+
+                # 4. THE FINAL BRIDGE (Enterprise to Equity)
+                st.write("#### 3. Valuation Bridge")
+                col_b1, col_b2 = st.columns([1, 1])
+                
+                with col_b1:
+                    with st.container(border=True):
+                        st.markdown(f"**PV of FCFF (Years 1-10):** {curr_sym} {sum_pv:,.0f}")
+                        st.markdown(f"**PV of Terminal Value:** {curr_sym} {pv_terminal:,.0f}")
+                        st.divider()
+                        value_op_assets = sum_pv + pv_terminal
+                        st.markdown(f"#### Value of Operating Assets: {curr_sym} {value_op_assets:,.0f}")
+                
+                with col_b2:
+                    with st.container(border=True):
+                        st.markdown(f"**(+) Cash & Equivalents:** {curr_sym} {dcf_inputs['cash']:,.0f}")
+                        st.markdown(f"**(-) Total Debt:** {curr_sym} {dcf_inputs['total_debt']:,.0f}")
+                        st.markdown(f"**(-) Minority Interest:** {curr_sym} {dcf_inputs['minority_int']:,.0f}")
+                        st.divider()
+                        value_equity = value_op_assets + dcf_inputs['cash'] - dcf_inputs['total_debt'] - dcf_inputs['minority_int']
+                        st.markdown(f"#### Value of Equity: {curr_sym} {value_equity:,.0f}")
+                        
+                # 5. THE FINAL VERDICT
+                value_per_share = value_equity / dcf_inputs["shares"] if dcf_inputs["shares"] > 0 else 0
+                current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                
+                st.write("### 🎯 Final Intrinsic Value")
+                col_v1, col_v2, col_v3 = st.columns(3)
+                
+                with col_v1:
+                    draw_glass_card("Calculated Value / Share", f"{curr_sym} {value_per_share:,.2f}")
+                with col_v2:
+                    draw_glass_card("Current Market Price", f"{curr_sym} {current_price:,.2f}")
+                with col_v3:
+                    if current_price > 0 and value_per_share > 0:
+                        upside = ((value_per_share - current_price) / current_price) * 100
+                        if upside > 0:
+                            draw_glass_card("Valuation Gap", f"Undervalued by {upside:.1f}%", "", "#2ab7ca")
+                        else:
+                            draw_glass_card("Valuation Gap", f"Overvalued by {abs(upside):.1f}%", "", "#ff4b4b")
+                    else:
+                        draw_glass_card("Valuation Gap", "N/A")
+
+                # 👇 NEW: ACADEMIC METHODOLOGY DISCLAIMER 👇
+                st.divider()
+                st.markdown("""
+                <div style="font-size: 12px; color: gray; line-height: 1.5; padding: 10px; background-color: rgba(128, 128, 128, 0.05); border-radius: 8px;">
+                <b>* Methodology Notes:</b><br>
+                1. <b>Cost of Debt:</b> Estimated at a flat 8% borrowing rate rather than dynamically pulled from corporate credit/bond ratings.<br>
+                2. <b>Constant WACC:</b> Cost of Capital (WACC) is held constant across the 10-year projection to maintain interactive slider stability, rather than gradually decaying to a mature rate.<br>
+                3. <b>Options Dilution:</b> Final Equity Value is divided directly by Outstanding Shares without subtracting the theoretical value of unexercised Employee Stock Options (options pool data is restricted).
+                </div>
+                """, unsafe_allow_html=True)
+
+            else:
+                st.error("🚨 **Valuation Failed:** This company either has negative operating income (EBIT) or missing raw financial statements...")
+
+        elif selected_tab == "AI Support":
             st.write("### ⚙️ 1. Historical Quant Model Prediction")
             st.caption("Data Source: Random Forest ML algorithms trained on historical patterns.")
             
@@ -528,24 +691,22 @@ if search_query:
             st.divider()
 
             st.write("### 🧮 2. Live Technical Analysis")
-            st.caption(f"Data Source: Real-time momentum calculations for {ticker_input}.")
-            
             col_ta1, col_ta2, col_ta3 = st.columns(3)
             with col_ta1:
                 rsi_status = "Neutral"
+                r_color = "gray"
                 if c_rsi is not None and not pd.isna(c_rsi):
-                    if c_rsi > 70: rsi_status = "Overbought ⚠️"
-                    elif c_rsi < 30: rsi_status = "Oversold 🟢"
-                st.metric("Current RSI (14-Day)", f"{c_rsi:.2f}" if c_rsi is not None and not pd.isna(c_rsi) else "N/A", rsi_status, delta_color="off")
+                    if c_rsi > 70: rsi_status, r_color = "Overbought ⚠️", "#ff4b4b"
+                    elif c_rsi < 30: rsi_status, r_color = "Oversold 🟢", "#2ab7ca"
+                draw_glass_card("Current RSI (14-Day)", f"{c_rsi:.2f}" if c_rsi is not None and not pd.isna(c_rsi) else "N/A", rsi_status, r_color)
             with col_ta2:
-                st.metric("Current MACD", f"{c_macd:.2f}" if c_macd is not None and not pd.isna(c_macd) else "N/A")
+                draw_glass_card("Current MACD", f"{c_macd:.2f}" if c_macd is not None and not pd.isna(c_macd) else "N/A")
             with col_ta3:
-                st.metric("Current 52-Week Zone", zone)
+                draw_glass_card("Current 52-Week Zone", zone)
 
             st.divider()
 
             st.write("### 🤖 3. Generative AI Synthesis")
-            
             with st.container(border=True):
                 if st.button("✨ Generate Hybrid AI Verdict", type="primary", use_container_width=True):
                     with st.spinner("Executing Final AI Analysis..."):
@@ -564,43 +725,35 @@ if search_query:
                 with col_b1:
                     with st.container(border=True):
                         st.write("**Daily Strategy Test**")
-                        st.metric("Accuracy", backtest_data['daily']['accuracy'])
-                        color_day = "normal" if backtest_data['daily']['beat'] else "inverse"
-                        st.metric("Strategy Return", backtest_data['daily']['return'], delta="Beat Market" if backtest_data['daily']['beat'] else "Underperformed", delta_color=color_day)
+                        draw_glass_card("Accuracy", backtest_data['daily']['accuracy'])
+                        c_day = "#2ab7ca" if backtest_data['daily']['beat'] else "#ff4b4b"
+                        draw_glass_card("Strategy Return", backtest_data['daily']['return'], "Beat Market" if backtest_data['daily']['beat'] else "Underperformed", c_day)
                 with col_b2:
                     with st.container(border=True):
                         st.write("**Weekly Strategy Test**")
-                        st.metric("Accuracy", backtest_data['weekly']['accuracy'])
-                        color_week = "normal" if backtest_data['weekly']['beat'] else "inverse"
-                        st.metric("Strategy Return", backtest_data['weekly']['return'], delta="Beat Market" if backtest_data['weekly']['beat'] else "Underperformed", delta_color=color_week)
+                        draw_glass_card("Accuracy", backtest_data['weekly']['accuracy'])
+                        c_wk = "#2ab7ca" if backtest_data['weekly']['beat'] else "#ff4b4b"
+                        draw_glass_card("Strategy Return", backtest_data['weekly']['return'], "Beat Market" if backtest_data['weekly']['beat'] else "Underperformed", c_wk)
+                
                 try:
-                    market_val = float(backtest_data['market_return'].replace('%', ''))
-                    weekly_val = float(backtest_data['weekly']['return'].replace('%', ''))
-# --- DYNAMIC ACTIONABLE VERDICT ---
                     st.divider()
                     st.write("### 🎯 Final Quant Verdict (Live Action)")
-                    
                     if sig_week == "BULLISH":
                         st.success(f"**ACTION: BUY / ACCUMULATE**\n\n**Data-Driven Reasoning:** The Live Machine Learning model is projecting a **{str_week}** trend for the upcoming 5 days. Based on the historical backtest metrics above, the weekly predictive layer successfully filters out daily noise to identify statistically favorable entry points.")
                     elif sig_week == "BEARISH":
                         st.error(f"**ACTION: SELL / REDUCE EXPOSURE**\n\n**Data-Driven Reasoning:** The Live Machine Learning model is projecting a **{str_week}** trend for the upcoming 5 days. Historical backtesting indicates a high probability of downside risk. It is recommended to protect capital right now.")
                     else:
                         st.warning("**ACTION: HOLD / WAIT**\n\n**Data-Driven Reasoning:** The quantitative models are currently showing weak or conflicting probability distributions. It is mathematically safer to wait for a definitive breakout or breakdown.")
-
                 except Exception as e:
                     pass
-
             else:
                 st.warning("⚠️ Run `python train_model.py` to generate backtest results!")
 
-                    
-
-        with tab5:
+        elif selected_tab == "Holdings":
             st.write("### 🏦 Smart Money Tracker (Mutual Funds & Institutions)")
             st.caption("Data Source: Top institutional and mutual fund holders reported via Yahoo Finance.")
             
             mf_df, inst_df = data_engine.get_institutional_holdings(ticker_input)
-            
             col_mf1, col_mf2 = st.columns(2)
             
             with col_mf1:
@@ -611,7 +764,7 @@ if search_query:
                     top_mf['Short_Name'] = top_mf['Holder'].apply(lambda x: str(x)[:35] + '...' if len(str(x)) > 35 else str(x))
                     
                     fig_mf = px.bar(top_mf, x=val_col, y='Short_Name', orientation='h', color_discrete_sequence=['#2ab7ca'])
-                    fig_mf.update_layout(yaxis={'categoryorder':'total ascending'}, xaxis_title="Percentage of Company Owned", yaxis_title="", margin=dict(t=10, b=10, l=10, r=10), height=350)
+                    fig_mf.update_layout(yaxis={'categoryorder':'total ascending'}, xaxis_title="Percentage of Company Owned", yaxis_title="", margin=dict(t=10, b=10, l=10, r=10), height=350, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                     if val_col in ['pctHeld', '% Out']:
                         fig_mf.update_layout(xaxis_tickformat=".2%")
                         
@@ -627,7 +780,7 @@ if search_query:
                     top_inst['Short_Name'] = top_inst['Holder'].apply(lambda x: str(x)[:35] + '...' if len(str(x)) > 35 else str(x))
                     
                     fig_inst = px.bar(top_inst, x=val_col, y='Short_Name', orientation='h', color_discrete_sequence=['#fe4a90'])
-                    fig_inst.update_layout(yaxis={'categoryorder':'total ascending'}, xaxis_title="Percentage of Company Owned", yaxis_title="", margin=dict(t=10, b=10, l=10, r=10), height=350)
+                    fig_inst.update_layout(yaxis={'categoryorder':'total ascending'}, xaxis_title="Percentage of Company Owned", yaxis_title="", margin=dict(t=10, b=10, l=10, r=10), height=350, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                     if val_col in ['pctHeld', '% Out']:
                         fig_inst.update_layout(xaxis_tickformat=".2%")
                         
@@ -635,12 +788,11 @@ if search_query:
                 else:
                     st.info("No Institutional holding data available for this specific stock on Yahoo Finance.")
 
-        with tab6:
+        elif selected_tab == "News":
             st.write("### 📰 Multi-API Live News & AI Consensus")
             st.caption(f"Cross-verifying Yahoo, NewsData, GNews, and StockData for {ticker_input}.")
             
             with st.spinner("Fetching data from all endpoints..."):
-                # Fetch all 4 sources
                 y_news = data_engine.get_stock_news(ticker_input) 
                 n_news = data_engine.get_newsdata_feed(ticker_input)
                 g_news = data_engine.get_gnews_feed(ticker_input)
@@ -653,7 +805,6 @@ if search_query:
                     "StockData": s_news
                 }
             
-            # --- MASTER AI BUTTON ---
             st.info("🧠 **Information Asymmetry Check:** Let AI cross-verify all sources for a consensus verdict.")
             if st.button("✨ Generate Master AI Consensus Report", type="primary", use_container_width=True):
                 with st.spinner("AI is analyzing and comparing all sources..."):
@@ -663,13 +814,9 @@ if search_query:
             
             st.divider()
 
-            # --- 4-COLUMN DASHBOARD LAYOUT ---
             st.write("### 🌐 Global News Terminal")
-            
-            # Create 4 equal columns
             col_y, col_g, col_n, col_s = st.columns(4)
 
-            # Define a helper to render a news column
             def render_news_column(col, title, news_list, icon):
                 with col:
                     st.markdown(f"#### {icon} {title}")
@@ -682,7 +829,6 @@ if search_query:
                                 st.caption(f"📅 {n.get('date', 'Today')}")
                                 st.divider()
 
-            # Map the 4 API sources to the 4 columns
             render_news_column(col_y, "Yahoo Finance", y_news, "💹")
             render_news_column(col_g, "Google News", g_news, "🔍")
             render_news_column(col_n, "NewsData.io", n_news, "📡")
