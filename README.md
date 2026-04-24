@@ -162,10 +162,15 @@ python train_model.py
 
 ## **Future Enhancements**
 Portfolio tracking and watchlists
+
 LSTM / deep learning price forecasting
+
 Broker integration
+
 PDF research report export
+
 User authentication
+
 Sector-level comparison dashboards
 
 **⚠️ Disclaimer**
