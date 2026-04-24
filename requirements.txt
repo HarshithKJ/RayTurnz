@@ -8,3 +8,4 @@ google-generativeai
 scikit-learn
 fpdf
 plotly
+streamlit-option-menu
