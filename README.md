@@ -154,6 +154,20 @@ It reflects the kind of thinking used in:
 
 ##  How to Run
 
-```bash
 pip install -r requirements.txt
 streamlit run app.py
+
+**To train the model**
+python train_model.py
+
+## **Future Enhancements**
+Portfolio tracking and watchlists
+LSTM / deep learning price forecasting
+Broker integration
+PDF research report export
+User authentication
+Sector-level comparison dashboards
+
+**⚠️ Disclaimer**
+
+This project is for educational and research purposes only. It is not financial advice.
